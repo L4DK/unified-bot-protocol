@@ -1,10 +1,10 @@
 # Discord Platform Adapter (UBP)
 
-**File:** `discord_platform_adapter.py`
-**Project:** Unified Bot Protocol (UBP)
-**Version:** 1.0.0
-**Last Updated:** 2025-09-17
-**Author:** Michael Landbo (Founder of UBP)
+- **File:** `discord_platform_adapter.py`
+- **Project:** Unified Bot Protocol (UBP)
+- **Version:** 1.0.1
+- **Last Updated:** 2025-09-19
+- **Author:** Michael Landbo (Founder of UBP)
 
 ---
 
