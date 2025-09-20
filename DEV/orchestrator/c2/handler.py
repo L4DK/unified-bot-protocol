@@ -1,14 +1,23 @@
 # orchestrator/c2/handler.py
+from orchestrator.security.audit import AuditLogger
+from orchestrator.security.encryption import CredentialEncryption
+from orchestrator.security.rate_limiter import RateLimiter
+from orchestrator.storage import BotStorage
+
+import logging
+
 class SecureC2ConnectionHandler:
     def __init__(self):
         self.rate_limiter = RateLimiter()
         self.encryption = CredentialEncryption()
         self.audit_logger = AuditLogger()
+        self.bot_storage = BotStorage()
 
     async def handle_handshake(
         self,
         handshake_request: dict,
-        client_ip: str
+        client_ip: str,
+        bot_id: str
     ) -> dict:
         """Handle bot handshake with enhanced security"""
 
@@ -24,15 +33,15 @@ class SecureC2ConnectionHandler:
                 'error_message': f'Too many connection attempts. Try again in {retry_after} seconds'
             }
 
-        bot_id = handshake_request.get('bot_id')
+        bot_id = handshake_request.get('bot_id', '')
         auth_token = handshake_request.get('auth_token')
 
         # Log connection attempt
         event_id = await self.audit_logger.log_security_event(
             event_type="BOT_CONNECTION_ATTEMPT",
-            user_id=bot_id,
+            user_id=bot_id if bot_id is not None else "",
             ip_address=client_ip,
-            details={"handshake_type": "initial"}
+            details={"handshake_type": "initial"},
         )
 
         try:

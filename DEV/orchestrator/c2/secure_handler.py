@@ -1,4 +1,14 @@
 # orchestrator/c2/secure_handler.py
+import logging
+import time
+from typing import Dict
+from fastapi import WebSocket, WebSocketDisconnect
+from orchestrator.security.authenticator import SecureBotAuthenticator
+from orchestrator.security.compliance_manager import ComplianceManager
+from orchestrator.security.threat_protection import ThreatProtection
+from orchestrator.security.zero_trust import ZeroTrustManager
+
+
 class SecureC2Handler:
     def __init__(self):
         self.zero_trust = ZeroTrustManager()
@@ -17,7 +27,7 @@ class SecureC2Handler:
             threat_analysis = await self.threat_protection.analyze_request(
                 client_ip,
                 {},  # Initial connection has no payload
-                websocket.headers
+                dict(websocket.headers),
             )
 
             if threat_analysis['blocked']:
