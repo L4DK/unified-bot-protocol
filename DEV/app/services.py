@@ -21,6 +21,7 @@ from adapters.mqtt_iot import MQTTAdapter
 from core.routing.policy_engine import PolicyEngine
 from core.routing.message_router import MessageRouter
 
+
 logging.basicConfig(level=logging.INFO)
 
 registry = AdapterRegistry()
