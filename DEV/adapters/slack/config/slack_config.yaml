@@ -1,0 +1,14 @@
+bot_token: "xoxb-your-slack-bot-token"
+app_token: "xapp-your-slack-app-token"
+
+logging:
+  level: "INFO"
+  file: "logs/slack_adapter.log"
+
+features:
+  enable_threads: true
+  enable_reactions: true
+  enable_file_upload: true
+
+rate_limits:
+  messages_per_minute: 50
