@@ -2,7 +2,7 @@
 Discord Platform Adapter for Unified Bot Protocol (UBP)
 =======================================================
 
-File: adapters/discord_adapter.py
+File: discord_platform_adapter.py
 Project: Unified Bot Protocol (UBP)
 Version: 1.0.0
 Last Edit: 2025-09-17

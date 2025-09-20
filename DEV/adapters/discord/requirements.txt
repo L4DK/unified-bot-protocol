@@ -1,0 +1,6 @@
+discord.py
+aiohttp
+websockets
+cryptography
+pytest
+pytest-asyncio
