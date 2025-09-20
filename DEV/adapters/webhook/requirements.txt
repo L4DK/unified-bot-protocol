@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+websockets
+pydantic
+requests
+cryptography
+pytest
+pytest-asyncio
