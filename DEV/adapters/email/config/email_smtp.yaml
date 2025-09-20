@@ -1,0 +1,6 @@
+host: "smtp.example.com"
+port: 587
+username: "user@example.com"
+password: "your_password"
+use_tls: true
+from: "noreply@example.com"
