@@ -1,0 +1,28 @@
+bot_token: "your_bot_token_here"
+webhook_url: "https://your-domain.com/webhook/telegram"
+webhook_secret: "your_webhook_secret"
+use_webhook: true
+polling_timeout: 30
+max_connections: 40
+allowed_updates: []
+drop_pending_updates: false
+security_key: "your_ubp_security_key"
+
+rate_limits:
+  per_second: 30
+  burst: 100
+
+file_handling:
+  max_file_size: 52428800  # 50MB
+  download_timeout: 300
+  upload_timeout: 300
+
+resilience:
+  retry_attempts: 3
+  retry_delay: 1.0
+  circuit_breaker_threshold: 5
+  circuit_breaker_timeout: 60
+
+logging:
+  level: "INFO"
+  file: "logs/telegram_adapter.log"
