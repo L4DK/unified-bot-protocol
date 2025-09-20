@@ -1,0 +1,19 @@
+# filepath: requirements-dev.txt
+# project: Unified Bot Protocol (UBP) - Reference Implementation
+# component: Development Tooling (formatting, typing, tests)
+# author: Michael Landbo (Founder & BDFL of UBP)
+#
+# license: Apache-2.0
+# version: 1.0.0
+# last-edit: 2025-09-19
+# notes:
+# - Keep dev tools in a separate file to avoid bloating production images.
+# - pytest-asyncio for async tests around C2, WebSocket flows.
+# - ruff for fast linting; mypy for types; black + isort for formatting.
+
+pytest
+pytest-asyncio
+mypy
+black
+isort
+ruff
