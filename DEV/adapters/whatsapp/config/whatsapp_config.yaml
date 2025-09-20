@@ -1,0 +1,17 @@
+whatsapp:
+phone_number_id: "1234567890"
+access_token: "your_facebook_access_token"
+
+logging:
+  level: "INFO"
+  file: "logs/whatsapp_adapter.log"
+
+features:
+  enable_templates: true
+  enable_media: true
+  enable_location: true
+
+rate_limits:
+  messages_per_day: 1000
+  messages_per_hour: 100
+  messages_per_minute: 10
