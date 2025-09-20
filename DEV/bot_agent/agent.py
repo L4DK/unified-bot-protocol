@@ -1,4 +1,4 @@
-# filepath: bot_agent/agent.py
+# filepath: bot/agent.py
 # project: Unified Bot Protocol (UBP)
 # component: Bot Agent (Reference Implementation)
 # license: Apache-2.0
