@@ -1,0 +1,15 @@
+app_secret: "your_facebook_app_secret"
+page_access_token: "your_page_access_token"
+verify_token: "your_webhook_verify_token"
+security_key: "your_ubp_security_key"
+
+logging:
+  level: "INFO"
+  file: "logs/facebook_messenger_adapter.log"
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+rate_limits:
+  max_requests_per_minute: 2000
