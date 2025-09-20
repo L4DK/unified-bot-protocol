@@ -4,6 +4,7 @@ from enum import Enum
 import asyncio
 import json
 import logging
+import aiohttp
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 import pytz
