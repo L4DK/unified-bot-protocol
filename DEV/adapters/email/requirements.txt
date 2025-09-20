@@ -1,0 +1,6 @@
+# For SMTP (if rewritten async)
+aiosmtplib
+
+# For IMAP and POP3
+pytest
+pytest-asyncio
