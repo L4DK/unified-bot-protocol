@@ -1,0 +1,13 @@
+tenant_id: "your_tenant_id"
+client_id: "your_client_id"
+client_secret: "your_client_secret"
+bot_app_id: "your_bot_app_id"
+bot_app_password: "your_bot_app_password"
+security_key: "your_ubp_security_key"
+
+logging:
+  level: "INFO"
+  file: "logs/microsoft_teams_adapter.log"
+
+rate_limits:
+  messages_per_minute: 30
