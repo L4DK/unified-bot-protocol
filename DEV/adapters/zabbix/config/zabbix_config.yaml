@@ -1,0 +1,77 @@
+# Zabbix Connection Settings
+zabbix_url: "https://your-zabbix-server.com"
+username: "ubp_monitoring_user"
+password: "secure_password_here"
+api_token: "your_api_token_here"  # Preferred over username/password
+
+# Security Configuration
+verify_ssl: true
+ssl_cert_path: "/path/to/client.crt"
+ssl_key_path: "/path/to/client.key"
+ca_cert_path: "/path/to/ca.crt"
+encryption_key: "your_32_character_encryption_key_here"
+jwt_secret: "your_jwt_secret_for_token_signing"
+
+# Webhook Configuration
+webhook_host: "0.0.0.0"
+webhook_port: 8080
+webhook_path: "/zabbix/webhook"
+webhook_secret: "your_webhook_verification_secret"
+webhook_ssl: true
+
+# Polling Configuration
+poll_interval: 30
+max_history_age: 3600
+batch_size: 100
+concurrent_requests: 10
+
+# Performance Settings
+connection_pool_size: 20
+request_timeout: 30
+max_retries: 3
+retry_delay: 1.0
+
+# Rate Limiting
+rate_limit_per_second: 50
+rate_limit_burst: 200
+adaptive_rate_limiting: true
+
+# Circuit Breaker
+circuit_breaker_threshold: 5
+circuit_breaker_timeout: 60
+circuit_breaker_recovery_timeout: 300
+
+# Caching
+cache_enabled: true
+cache_ttl: 300
+redis_url: "redis://localhost:6379/0"
+
+# Monitoring Filters
+monitored_host_groups:
+  - "Production Servers"
+  - "Critical Infrastructure"
+  - "Database Servers"
+
+monitored_hosts:
+  - "web-server-01"
+  - "db-master"
+  - "load-balancer"
+
+severity_filter: [2, 3, 4, 5]  # Warning, Average, High, Disaster
+
+tag_filters:
+  environment: "production"
+  criticality: "high"
+
+# Advanced Features
+enable_predictive_alerts: true
+enable_auto_remediation: false
+enable_maintenance_mode: true
+enable_dependency_tracking: true
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/zabbix_adapter.log"
+  max_size: "100MB"
+  backup_count: 5
