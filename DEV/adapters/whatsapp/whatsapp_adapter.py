@@ -1,4 +1,27 @@
-# adapters/whatsapp/adapter.py
+#
+"""
+Whatsapp Platform Adapter for Unified Bot Protocol (UBP)
+=======================================================
+
+FILEPATH: adapters/whatsapp/adapter.py
+Project: Unified Bot Protocol (UBP)
+Version: 1.0.1
+Created: 2025-09-17
+Last Edit: 2025-09-19
+Author: Michael Landbo
+
+Description:
+Complete Whatsapp Platform Adapter implementation providing bidirectional
+communication between Whatsapp and the UBP Orchestrator. Handles all Whatsapp
+events, message types, interactions, and maintains full UBP compliance.
+
+Features:
+- Full Whatsapp API integration with aiohttp
+
+
+TODO:
+
+"""
 from ..base import PlatformAdapter, AdapterMetadata
 import aiohttp
 
