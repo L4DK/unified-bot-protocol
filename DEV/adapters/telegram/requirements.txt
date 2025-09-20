@@ -1,0 +1,7 @@
+fastapi
+aiohttp
+websockets
+pydantic
+uvicorn>
+pytest
+pytest-asyncio
