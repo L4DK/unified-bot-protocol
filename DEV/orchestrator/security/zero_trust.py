@@ -1,12 +1,16 @@
 # orchestrator/security/zero_trust.py
-from typing import Dict, Optional, Tuple
+import json
+from typing import Dict, List, Optional, Tuple
 import jwt
 import time
 import hashlib
 from cryptography.x509 import load_pem_x509_certificate
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.backends import default_backend
+import logging
 import base64
 import os
+import datetime
 
 class ZeroTrustManager:
     def __init__(self):
@@ -71,21 +75,27 @@ class ZeroTrustManager:
         cert_data: Optional[str]
     ) -> bool:
         """Verify bot's certificate"""
-        if not cert_data:
+        if cert_data is None:
             return False
 
         try:
-            cert = load_pem_x509_certificate(cert_data.encode())
+            cert = load_pem_x509_certificate(cert_data.encode("utf-8"))
 
             # Verify certificate is not expired
-            if cert.not_valid_after < time.time():
+            if cert.not_valid_after is None or cert.not_valid_after < datetime.datetime.fromtimestamp(time.time()):
                 return False
 
-            # Verify certificate is in our store
-            cert_fingerprint = cert.fingerprint(hashlib.sha256())
+            # Define the backend variable
+            backend = default_backend()
+
+            # Verify the certificate
+            cert_fingerprint = cert.fingerprint(hashes.SHA256()).hex()
+
             return cert_fingerprint in self.certificate_store
 
-        except Exception:
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error verifying certificate: {str(e)}")
             return False
 
     async def _verify_device_fingerprint(
@@ -246,7 +256,7 @@ class ZeroTrustManager:
         if not time_context:
             return False
 
-        current_hour = datetime.now().hour
+        current_hour = datetime.datetime.now().hour
         allowed_hours = time_context.get('allowed_hours', range(24))
 
         return current_hour in allowed_hours

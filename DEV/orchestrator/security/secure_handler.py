@@ -1,7 +1,9 @@
 # orchestrator/security/secure_handler.py
+import datetime
+import json
 from .threat_protection import ThreatProtection
 from .secure_communication import SecureCommunication
-from .compliance import ComplianceManager
+from .compliance_manager import ComplianceManager
 from typing import Dict, Optional
 import logging
 
@@ -118,11 +120,13 @@ class SecureRequestHandler:
     ):
         """Log security events with proper formatting"""
         self.logger.info(
-            json.dumps({
-                'event_type': event_type,
-                'request_id': request_id,
-                'ip_address': ip_address,
-                'timestamp': datetime.utcnow().isoformat(),
-                'details': details
-            })
+            json.dumps(
+                {
+                    "event_type": event_type,
+                    "request_id": request_id,
+                    "ip_address": ip_address,
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "details": details,
+                }
+            )
         )
