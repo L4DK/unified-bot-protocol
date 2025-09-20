@@ -1,0 +1,15 @@
+aiohttp
+aiofiles
+asyncio
+pydantic
+cryptography
+structlog
+ujson
+tenacity
+scikit-learn
+numpy
+pandas
+matplotlib
+seaborn
+pyjwt
+redis
