@@ -39,21 +39,6 @@ Unified-Bot-Protocol/
 │   ├── openai_integration.py         # OpenAI/LLM support
 │   └── smart_device_integration.py   # IoT devices (TVs, Thermostats, Lights)
 │
-├── deployments/
-│   ├── docker/
-│   │   ├── Dockerfile.orchestrator
-│   │   ├── Dockerfile.bot
-│   │   ├── docker-compose.yml
-│   │   └── README.md
-│   ├── kubernetes/
-│   │   ├── orchestrator-deployment.yaml
-│   │   ├── bot-deployment.yaml
-│   │   ├── redis-cluster.yaml
-│   │   └── README.md
-│   └── podman/
-│       ├── podman-pod.yaml
-│       └── README.md
-│
 ├── docs/
 │   ├── README.md                     # Master Documentation Index
 │   ├── ARCHITECTURE.md               # Architectural overview
@@ -256,4 +241,5 @@ pytest
 mypy
 black
 ```
+
 
