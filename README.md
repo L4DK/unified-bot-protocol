@@ -1,77 +1,8 @@
-### 1. Folder Structure
-
-```bash
-Unified-Bot-Protocol/
-│
-├── orchestrator/
-│   ├── __init__.py
-│   ├── orchestrator_server.py        # Core Orchestrator (FastAPI + WebSocket C2 Channel)
-│   ├── management_api.py             # Management API (Phase 2)
-│   ├── task_manager.py               # Async Task API (Phase 3)
-│   ├── security/
-│   │   ├── __init__.py
-│   │   ├── authenticator.py          # Secure Bot Authenticator (Zero Trust)
-│   │   ├── encryption.py             # RSA/AES hybrid cryptography
-│   │   ├── threat_protection.py      # WAF & anomaly detection
-│   │   └── compliance_manager.py     # Audit/log retention
-│   ├── core/
-│   │   ├── routing/
-│   │   │   └── message_router.py     # Load balancer + intelligent routing
-│   │   ├── conversation/
-│   │   │   └── manager.py            # Conversation state/context manager
-│   │   └── analytics/
-│   │       └── engine.py             # KPIs/metrics centralized pipeline
-│   └── adapters/
-│       ├── base.py                   # Base Adapter Class
-│       ├── telegram_adapter.py
-│       ├── slack_adapter.py
-│       ├── whatsapp_adapter.py
-│       ├── discord_adapter.py
-│       └── universal_webhook.py      # Universal inbound adapter
-│
-├── bot/
-│   ├── __init__.py
-│   ├── agent.py                      # Reference Bot Agent
-│   └── secure_handshake.py           # Token + Key onboarding
-│
-├── integrations/
-│   ├── __init__.py
-│   ├── openai_integration.py         # OpenAI/LLM support
-│   └── smart_device_integration.py   # IoT devices (TVs, Thermostats, Lights)
-│
-├── docs/
-│   ├── README.md                     # Master Documentation Index
-│   ├── ARCHITECTURE.md               # Architectural overview
-│   ├── API.md                        # API schemas
-│   └── SECURITY.md                   # Security principles
-│
-├── tests/
-│   ├── test_orchestrator.py
-│   ├── test_agent.py
-│   ├── test_router.py
-│   └── test_adapters.py
-│
-├── README.md                         # Global Project README
-├── requirements.txt                  # All components (umbrella)
-├── requirements-orchestrator.txt
-├── requirements-bot.txt
-├── requirements-adapters.txt
-├── requirements-integrations.txt
-├── requirements-security.txt
-└── requirements-dev.txt              # dev-only (pytest, mypy, black, etc.)
-```
-
----
-
-### 2. README.md (Multi-level)
-
-#### 🔹 Global `README.md`
-
-```markdown
 # Unified Bot Protocol (UBP)
-> Founder & Principal Architect: Michael Landbo
+#### Founder & Principal Architect: Michael Landbo
 
-The **Unified Bot Protocol (UBP)** is a universal abstraction layer and orchestration framework for managing heterogeneous bot fleets. It provides a **common protocol**, **secure orchestration**, and **interoperability** across messaging platforms, APIs, LLMs, and smart devices.
+## The **Unified Bot Protocol (UBP)** is a universal abstraction layer and orchestration framework for managing heterogeneous bot fleets. 
+#### It provides a **common protocol**, **secure orchestration**, and **interoperability** across messaging platforms, APIs, LLMs, and smart devices.
 
 ---
 
@@ -241,5 +172,70 @@ pytest
 mypy
 black
 ```
+
+### 1. Folder Structure
+
+```bash
+Unified-Bot-Protocol/
+│
+├── orchestrator/
+│   ├── __init__.py
+│   ├── orchestrator_server.py        # Core Orchestrator (FastAPI + WebSocket C2 Channel)
+│   ├── management_api.py             # Management API (Phase 2)
+│   ├── task_manager.py               # Async Task API (Phase 3)
+│   ├── security/
+│   │   ├── __init__.py
+│   │   ├── authenticator.py          # Secure Bot Authenticator (Zero Trust)
+│   │   ├── encryption.py             # RSA/AES hybrid cryptography
+│   │   ├── threat_protection.py      # WAF & anomaly detection
+│   │   └── compliance_manager.py     # Audit/log retention
+│   ├── core/
+│   │   ├── routing/
+│   │   │   └── message_router.py     # Load balancer + intelligent routing
+│   │   ├── conversation/
+│   │   │   └── manager.py            # Conversation state/context manager
+│   │   └── analytics/
+│   │       └── engine.py             # KPIs/metrics centralized pipeline
+│   └── adapters/
+│       ├── base.py                   # Base Adapter Class
+│       ├── telegram_adapter.py
+│       ├── slack_adapter.py
+│       ├── whatsapp_adapter.py
+│       ├── discord_adapter.py
+│       └── universal_webhook.py      # Universal inbound adapter
+│
+├── bot/
+│   ├── __init__.py
+│   ├── agent.py                      # Reference Bot Agent
+│   └── secure_handshake.py           # Token + Key onboarding
+│
+├── integrations/
+│   ├── __init__.py
+│   ├── openai_integration.py         # OpenAI/LLM support
+│   └── smart_device_integration.py   # IoT devices (TVs, Thermostats, Lights)
+│
+├── docs/
+│   ├── README.md                     # Master Documentation Index
+│   ├── ARCHITECTURE.md               # Architectural overview
+│   ├── API.md                        # API schemas
+│   └── SECURITY.md                   # Security principles
+│
+├── tests/
+│   ├── test_orchestrator.py
+│   ├── test_agent.py
+│   ├── test_router.py
+│   └── test_adapters.py
+│
+├── README.md                         # Global Project README
+├── requirements.txt                  # All components (umbrella)
+├── requirements-orchestrator.txt
+├── requirements-bot.txt
+├── requirements-adapters.txt
+├── requirements-integrations.txt
+├── requirements-security.txt
+└── requirements-dev.txt              # dev-only (pytest, mypy, black, etc.)
+```
+
+---
 
 
