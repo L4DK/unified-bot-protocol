@@ -3,8 +3,8 @@
 # Description: In-memory storage implementation for bot definitions and credentials.
 #              Designed to be replaced by Redis/PostgreSQL in production.
 # Author: "Michael Landbo"
-# Date created: "21/12/2025"
-# Date Modified: "21/12/2025"
+# Date created: "2025/09/19"
+# Date Modified: "2025/12/21"
 # Version: "v.1.0.0"
 
 from typing import Dict, List, Optional
@@ -84,3 +84,4 @@ class BotStorage:
         if not creds or not creds.api_key:
             return False
         return creds.api_key == api_key
+
