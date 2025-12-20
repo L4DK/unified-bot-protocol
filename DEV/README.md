@@ -1,11 +1,3 @@
-Excellent — let’s consolidate the full project layout of the **UBP Reference Implementation** so far. I’ll give you:
-
-1. **Folder Structure** (all the code and deployment files we’ve built during Phases 1–3).
-2. **README.md** (one global, plus scoped READMEs for subcomponents and adapters).
-3. **requirements.txt** for each single component (granular installs), and a **requirements.txt (all)** global file.
-
----
-
 ### 1. Folder Structure
 
 ```bash
@@ -264,4 +256,5 @@ pytest
 mypy
 black
 ```
+
 
