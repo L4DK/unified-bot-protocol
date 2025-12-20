@@ -23,6 +23,7 @@ grpcio
 # State & Models
 redis
 pydantic
+pydantic-settings
 SQLAlchemy
 
 # Security
@@ -32,4 +33,5 @@ PyJWT
 # Observability
 prometheus-client
 opentelemetry-sdk
+
 structlog
