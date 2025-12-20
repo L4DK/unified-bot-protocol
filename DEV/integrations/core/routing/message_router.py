@@ -1436,7 +1436,7 @@ class MessageRouter:
             "timestamp": time.time(),
             "random": random.random()
         }, sort_keys=True)
-        return hashlib.md5(seed.encode()).hexdigest()[:16]
+        return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
     # ==================
     # Monitoring & Metrics
