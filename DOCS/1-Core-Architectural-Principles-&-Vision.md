@@ -217,5 +217,3 @@ This is an example of a log entry that adheres to our observability principle. I
   }
 }
 ```
-
-If you are satisfied with this detailed breakdown of the core principles, I will proceed to the next item on our list: **"2. System Components & Information Flow"**.
