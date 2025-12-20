@@ -347,5 +347,3 @@ if __name__ == "__main__":
         ```
       * **Observe Logs:** Watch the structured JSON logs appear in both terminal windows, and note how the `trace_id` from the Orchestrator's command appears in the agent's logs when it processes that command.
       * **Simulate Failure:** Stop the Orchestrator (`Ctrl+C`). You will see the Bot Agent detect the connection loss, set its connection status metric to 0, and attempt to reconnect. Its readiness probe (`/health/ready`) will now fail if you check it. Once you restart the Orchestrator, the agent will automatically reconnect and become ready again, demonstrating self-healing principles.
-
-This concludes our deep dive into the architecture and implementation of the Unified Bot Protocol framework. These runnable examples provide a tangible foundation, demonstrating how all the theoretical principles come together to create a system that is robust, observable, and ready for scalable, real-world deployment.
