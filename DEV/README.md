@@ -169,38 +169,38 @@ pip install -r ../../requirements-adapters.txt
 #### Global `requirements.txt` (ALL)
 ```txt
 # Core Web Framework
-fastapi==0.115.*
-uvicorn[standard]==0.30.*
-httpx==0.27.*
+fastapi
+uvicorn[standard]
+httpx
 
 # Communication
-websockets==13.0
-grpcio==1.66.*
+websockets
+grpcio
 
 # Data & Storage
-redis==5.1.*
-pydantic==2.9.*
-sqlalchemy==2.0.*
+redis
+pydantic
+sqlalchemy
 
 # Security
-cryptography==43.0
-pyjwt==2.9.*
+cryptography
+pyjwt
 
 # Observability
-prometheus-client==0.21.*
-opentelemetry-sdk==1.28.*
-structlog==24.4.*
+prometheus-client
+opentelemetry-sdk
+structlog
 
 # LLMs
-openai==1.51.*
+openai
 
 # IoT
-paho-mqtt==1.6.*
+paho-mqtt
 
 # Testing / Dev
-pytest==8.3.*
-mypy==1.11.*
-black==24.8.*
+pytest
+mypy
+black
 ```
 
 #### Component-Specific
@@ -264,3 +264,4 @@ pytest
 mypy
 black
 ```
+
