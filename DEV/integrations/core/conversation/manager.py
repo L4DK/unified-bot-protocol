@@ -606,10 +606,10 @@ class ConversationManager:
         user_id = message.get("user_id", "anonymous")
         channel_id = message.get("channel_id", "default")
 
-        # Create deterministic ID using hash
+        # Create deterministic ID using strong hash
         id_components = [platform, user_id, channel_id]
         id_string = ":".join(str(comp) for comp in id_components)
-        return hashlib.md5(id_string.encode()).hexdigest()
+        return hashlib.sha256(id_string.encode()).hexdigest()
 
     # =================
     # Public API Methods
