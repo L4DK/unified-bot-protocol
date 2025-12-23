@@ -1,18 +1,35 @@
-# orchestrator/security/secure_handler.py
+# FilePath: "/DEV/orchestrator/security/secure_handler.py"
+# Project: Unified Bot Protocol (UBP)
+# Description: Orchestrates security checks (Threats, Compliance, Encryption) for requests.
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Date Modified: "21/12/2025"
+# Version: "v.1.0.0"
+
 import datetime
 import json
-from .threat_protection import ThreatProtection
-from .secure_communication import SecureCommunication
-from .compliance_manager import ComplianceManager
 from typing import Dict, Optional
 import logging
 
+# Internal imports
+from .threat_protection import ThreatProtection
+from .secure_communication import SecureCommunication
+from .compliance_manager import ComplianceManager
+
 class SecureRequestHandler:
+    """
+    Central security handler that pipes requests through the security stack:
+    1. Threat Protection (IP/Payload analysis)
+    2. Compliance (GDPR/PII checks)
+    3. Audit Logging
+    4. Secure Communication (Encryption)
+    """
+
     def __init__(self):
         self.threat_protection = ThreatProtection()
         self.secure_comm = SecureCommunication()
         self.compliance_manager = ComplianceManager()
-        self.logger = logging.getLogger("security")
+        self.logger = logging.getLogger("ubp.security.handler")
 
     async def handle_secure_request(
         self,
@@ -22,7 +39,10 @@ class SecureRequestHandler:
         payload: Dict,
         compliance_rules: Optional[Dict] = None
     ) -> Dict:
-        """Handle incoming request with full security stack"""
+        """
+        Handle incoming request with full security stack.
+        Returns a dictionary with status and data (or error details).
+        """
 
         try:
             # 1. Threat Analysis
@@ -65,6 +85,7 @@ class SecureRequestHandler:
                     }
 
             # 3. Sanitize PII
+            # We sanitize the payload before processing/logging to prevent PII leaks in logs
             sanitized_payload = self.compliance_manager.sanitize_pii(payload)
 
             # 4. Create Audit Trail
@@ -79,10 +100,11 @@ class SecureRequestHandler:
                 }
             )
 
-            # 5. Secure Communication
+            # 5. Secure Communication (Encryption for high/medium risk)
             if threat_analysis['risk_level'] == 'medium':
                 # Establish secure session for medium-risk requests
                 session_key, iv = self.secure_comm.generate_session_key()
+
                 encrypted_response = self.secure_comm.encrypt_message(
                     json.dumps(sanitized_payload),
                     session_key,
@@ -98,6 +120,7 @@ class SecureRequestHandler:
                     )
                 }
 
+            # Default: Return sanitized data
             return {
                 'status': 'SUCCESS',
                 'data': sanitized_payload,
@@ -118,7 +141,7 @@ class SecureRequestHandler:
         ip_address: str,
         details: Dict
     ):
-        """Log security events with proper formatting"""
+        """Log security events with proper JSON formatting for ingestion tools."""
         self.logger.info(
             json.dumps(
                 {
