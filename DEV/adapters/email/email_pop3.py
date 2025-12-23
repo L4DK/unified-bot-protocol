@@ -1,173 +1,198 @@
-# adapters/email/email_pop3.py
 """
-Email POP3 Adapter for Unified Bot Protocol (UBP)
-=================================================
-
-File: email_pop3.py
+FilePath: "/adapters/email/email_pop3.py"
 Project: Unified Bot Protocol (UBP)
-Version: 1.0.0
-Last Edited: 2025-09-19
-Author: Michael Landbo (UBP BDFL)
-License: Apache-2.0
-
-Description:
-Inbound email adapter using POP3 protocol to fetch and process incoming emails.
-Supports secure connection, polling, message parsing, attachments, observability,
-security, and resilience.
-
-Enhancements:
-- Structured logging and metrics
-- Security signing for events
-- Retry and error handling
-- Full async integration with UBP Orchestrator
+Component: POP3 Email Adapter (Inbound)
+Version: 1.1.0 (Refactored for BaseAdapter 1.3.0)
 """
 
 import asyncio
-import email
 import poplib
-import logging
-import json
-from typing import Dict, Any, Optional, List
+import email
+from email.header import decode_header
+from typing import Dict, Any
 
-from .base import BaseAdapter, AdapterContext, AdapterCapabilities, SimpleSendResult
+from adapters.base_adapter import (
+    PlatformAdapter,
+    AdapterCapabilities,
+    AdapterMetadata,
+    AdapterContext,
+    PlatformCapability,
+    SendResult,
+    SimpleSendResult,
+    AdapterStatus
+)
 
-from ubp_core.security import SecurityManager
-from ubp_core.observability import StructuredLogger, MetricsCollector
-
-
-class POP3EmailAdapter(BaseAdapter):
-    adapter_id = "pop3_email"
-    display_name = "POP3 Email"
-    capabilities = AdapterCapabilities(
-        supports_text=True,
-        supports_media=True,
-        supports_buttons=False,
-        supports_threads=False,
-    )
+class POP3EmailAdapter(PlatformAdapter):
+    """
+    Official UBP POP3 Adapter.
+    Polls a POP3 server, downloads new emails, converts them to UBP messages,
+    and deletes them from the server (standard POP3 behavior).
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.host = config["host"]
-        self.port = config.get("port", 995)
-        self.username = config["username"]
-        self.password = config["password"]
-        self.use_ssl = config.get("use_ssl", True)
-        self.poll_interval = config.get("poll_interval", 60)  # seconds
+        self.pop3_config = config.get('email_pop3', config)
 
-        self.logger = StructuredLogger("pop3_email_adapter")
-        self.metrics = MetricsCollector("pop3_email_adapter")
-        self.security = SecurityManager(config.get("security_key", ""))
+        self.host = self.pop3_config.get("host")
+        self.port = self.pop3_config.get("port", 995)
+        self.username = self.pop3_config.get("username")
+        self.password = self.pop3_config.get("password")
+        self.use_ssl = self.pop3_config.get("use_ssl", True)
+        self.poll_interval = self.pop3_config.get("poll_interval", 60)
 
-        self._stop_event = asyncio.Event()
+        self._poll_task = None
 
-    async def start(self):
-        self.logger.info("Starting POP3 Email Adapter polling")
-        while not self._stop_event.is_set():
+    @property
+    def platform_name(self) -> str:
+        return "email_pop3"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # POP3 er read-only polling
+        return AdapterCapabilities(supported_capabilities=set())
+
+    @property
+    def metadata(self) -> AdapterMetadata:
+        return AdapterMetadata(
+            platform="email_pop3",
+            display_name="POP3 Listener",
+            version="1.1.0",
+            author="Michael Landbo",
+            description="Polls POP3 server and processes emails"
+        )
+
+    # --- Lifecycle ---
+
+    async def _setup_platform(self) -> None:
+        """Starter polling loopet"""
+        self.logger.info(f"Starting POP3 Polling on {self.host} every {self.poll_interval}s")
+        self._poll_task = asyncio.create_task(self._poll_loop())
+
+    async def stop(self) -> None:
+        if self._poll_task:
+            self._poll_task.cancel()
+        await super().stop()
+
+    async def send_message(self, context, message) -> SendResult:
+        return SimpleSendResult(False, error_message="POP3 Adapter is read-only. Use SMTP Adapter to send.")
+
+    async def handle_platform_event(self, event): pass
+    async def handle_command(self, command): return {}
+
+    # --- Polling Logic ---
+
+    async def _poll_loop(self):
+        while not self._shutdown_event.is_set():
             try:
-                await self._poll_mailbox()
+                # Kør blokerende netværkskald i en executor for ikke at fryse botten
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._sync_check_mail)
             except Exception as e:
-                self.logger.error(f"Error polling mailbox: {e}")
-                self.metrics.increment("pop3_email.poll_errors")
+                self.logger.error(f"POP3 Polling Error: {e}")
+
             await asyncio.sleep(self.poll_interval)
 
-    async def stop(self):
-        self.logger.info("Stopping POP3 Email Adapter")
-        self._stop_event.set()
-
-    async def _poll_mailbox(self):
-        self.logger.debug("Connecting to POP3 server")
-        if self.use_ssl:
-            mail = poplib.POP3_SSL(self.host, self.port)
-        else:
-            mail = poplib.POP3(self.host, self.port)
-
-        mail.user(self.username)
-        mail.pass_(self.password)
-
-        num_messages = len(mail.list()[1])
-        self.logger.info(f"Found {num_messages} messages in mailbox")
-        self.metrics.gauge("pop3_email.mailbox_size", num_messages)
-
-        for i in range(num_messages):
-            try:
-                response, lines, octets = mail.retr(i + 1)
-                raw_email = b"\r\n".join(lines)
-                msg = email.message_from_bytes(raw_email)
-
-                parsed_email = self._parse_email(msg)
-
-                ubp_event = {
-                    "event_type": "email.pop3.message.received",
-                    "platform": "email_pop3",
-                    "timestamp": parsed_email.get("date"),
-                    "content": parsed_email,
-                    "adapter_id": self.adapter_id,
-                }
-                await self.send_event_to_orchestrator(ubp_event)
-
-                # Delete message after processing
-                mail.dele(i + 1)
-            except Exception as e:
-                self.logger.error(f"Failed to process message {i + 1}: {e}")
-                self.metrics.increment("pop3_email.message_processing_failures")
-
-        mail.quit()
-
-    def _parse_email(self, msg) -> Dict[str, Any]:
-        subject = msg.get("Subject", "")
-        from_ = msg.get("From", "")
-        to = msg.get("To", "")
-        date = msg.get("Date", "")
-        body = ""
-        attachments = []
-
-        if msg.is_multipart():
-            for part in msg.walk():
-                content_type = part.get_content_type()
-                disposition = str(part.get("Content-Disposition"))
-                if content_type == "text/plain" and "attachment" not in disposition:
-                    body += part.get_payload(decode=True).decode(errors="ignore")
-                elif "attachment" in disposition:
-                    attachments.append(
-                        {
-                            "filename": part.get_filename(),
-                            "content_type": content_type,
-                            "size": len(part.get_payload(decode=True)),
-                        }
-                    )
-        else:
-            body = msg.get_payload(decode=True).decode(errors="ignore")
-
-        return {
-            "subject": subject,
-            "from": from_,
-            "to": to,
-            "date": date,
-            "body": body,
-            "attachments": attachments,
-        }
-
-    async def send_event_to_orchestrator(self, event: Dict[str, Any]):
+    def _sync_check_mail(self):
+        """Synkron logik der forbinder, henter og sletter mails"""
+        mail = None
         try:
-            if not hasattr(self, "orchestrator_ws") or self.orchestrator_ws is None:
-                self.logger.warning(
-                    "No orchestrator connection available, dropping event"
-                )
-                self.metrics.increment("pop3_email.events.dropped")
+            # 1. Forbind
+            if self.use_ssl:
+                mail = poplib.POP3_SSL(self.host, self.port)
+            else:
+                mail = poplib.POP3(self.host, self.port)
+
+            mail.user(self.username)
+            mail.pass_(self.password)
+
+            # 2. Tjek status
+            num_messages = len(mail.list()[1])
+            if num_messages == 0:
+                mail.quit()
                 return
 
-            event_json = json.dumps(event)
-            signature = self.security.sign_message(event_json)
+            self.logger.info(f"POP3: Found {num_messages} messages")
+            self.metrics["mailbox_size"] = num_messages
 
-            payload = {
-                "message": event,
-                "signature": signature,
-            }
+            # 3. Hent hver besked
+            # POP3 indekserer fra 1 til N
+            for i in range(1, num_messages + 1):
+                try:
+                    # Hent (RETR)
+                    response, lines, octets = mail.retr(i)
+                    raw_email = b"\r\n".join(lines)
+                    msg = email.message_from_bytes(raw_email)
 
-            await self.orchestrator_ws.send(json.dumps(payload))
-            self.metrics.increment("pop3_email.events.sent")
-            self.logger.info(f"Sent event to orchestrator: {event['event_type']}")
+                    # Behandl Async (Send til Orchestrator)
+                    # Vi bruger run_coroutine_threadsafe da vi er i en thread executor
+                    asyncio.run_coroutine_threadsafe(
+                        self._process_email(msg),
+                        asyncio.get_running_loop()
+                    ).result() # Vent på at den er afleveret før vi sletter
+
+                    # Slet fra serveren (DELE) - Dette er "Mark as Read" i POP3
+                    mail.dele(i)
+
+                except Exception as e:
+                    self.logger.error(f"Failed to process message {i}: {e}")
+                    self.metrics["poll_errors"] = self.metrics.get("poll_errors", 0) + 1
+
+            # 4. Luk og bekræft sletninger
+            mail.quit()
 
         except Exception as e:
-            self.logger.error(f"Failed to send event to orchestrator: {e}")
-            self.metrics.increment("pop3_email.events.failed")
+            self.logger.error(f"POP3 Connection Error: {e}")
+            try:
+                if mail: mail.quit()
+            except: pass
+
+    async def _process_email(self, msg):
+        """Konverterer email objekt til UBP besked"""
+        # Decode Subject
+        subject_header = msg.get("Subject", "(No Subject)")
+        decoded_list = decode_header(subject_header)
+        subject = ""
+        for token, encoding in decoded_list:
+            if isinstance(token, bytes):
+                subject += token.decode(encoding or "utf-8", errors="ignore")
+            else:
+                subject += token
+
+        sender = msg.get("From", "Unknown")
+
+        # Extract Body
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        body = payload.decode(errors="ignore")
+                    break
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                body = payload.decode(errors="ignore")
+
+        # Create UBP Context & Payload
+        context = AdapterContext(
+            tenant_id="default",
+            user_id=sender,
+            channel_id=sender,
+            extras={"subject": subject, "protocol": "pop3"}
+        )
+
+        payload = {
+            "type": "text",
+            "content": body,
+            "metadata": {"subject": subject, "source": "email_pop3"}
+        }
+
+        # Send til Runtime
+        if self.connected:
+            await self._send_to_orchestrator({
+                "type": "user_message",
+                "context": context.to_dict(),
+                "payload": payload
+            })
+            self.metrics["messages_received"] += 1

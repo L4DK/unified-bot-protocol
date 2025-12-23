@@ -1,200 +1,182 @@
-# adapters/email/email_imap.py
 """
-Email IMAP Adapter for Unified Bot Protocol (UBP)
-=================================================
-
-File: email_imap.py
+FilePath: "/adapters/email/email_imap.py"
 Project: Unified Bot Protocol (UBP)
-Version: 1.0.0
-Last Edited: 2025-09-19
-Author: Michael Landbo (UBP BDFL)
-License: Apache-2.0
-
-Description:
-Inbound email adapter using IMAP protocol to fetch and process incoming emails.
-Supports secure connection, polling, message parsing, attachments, observability,
-security, and resilience.
-
-Enhancements:
-- Added structured logging and metrics
-- Added security signing for events
-- Added retry and error handling
-- Prepared for IDLE support (TODO)
-- Full async integration with UBP Orchestrator
+Component: IMAP Email Adapter (Inbound)
+Version: 1.1.1 (Fixed e_id scope error)
 """
 
 import asyncio
-import email
 import imaplib
-import logging
-import json
-from typing import Dict, Any, Optional, List
+import email
+from email.header import decode_header
+from typing import Dict, Any
 
-from .base import BaseAdapter, AdapterContext, AdapterCapabilities, SimpleSendResult
+from adapters.base_adapter import (
+    PlatformAdapter,
+    AdapterCapabilities,
+    AdapterMetadata,
+    AdapterContext,
+    PlatformCapability,
+    SendResult,
+    SimpleSendResult
+)
 
-# Hypothetical imports from UBP core modules for security and observability
-from ubp_core.security import SecurityManager
-from ubp_core.observability import StructuredLogger, MetricsCollector
-
-
-class IMAPEmailAdapter(BaseAdapter):
-    adapter_id = "imap_email"
-    display_name = "IMAP Email"
-    capabilities = AdapterCapabilities(
-        supports_text=True,
-        supports_media=True,
-        supports_buttons=False,
-        supports_threads=False,
-    )
+class IMAPEmailAdapter(PlatformAdapter):
+    """
+    Official UBP IMAP Adapter.
+    Polls an inbox and converts emails to UBP User Messages.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.host = config["host"]
-        self.port = config.get("port", 993)
-        self.username = config["username"]
-        self.password = config["password"]
-        self.use_ssl = config.get("use_ssl", True)
-        self.mailbox = config.get("mailbox", "INBOX")
-        self.poll_interval = config.get("poll_interval", 60)  # seconds
+        self.imap_config = config.get('email_imap', config) # Support both keys
 
-        # Initialize logger and metrics
-        self.logger = StructuredLogger("imap_email_adapter")
-        self.metrics = MetricsCollector("imap_email_adapter")
+        self.host = self.imap_config.get("host")
+        self.port = self.imap_config.get("port", 993)
+        self.username = self.imap_config.get("username")
+        self.password = self.imap_config.get("password")
+        self.poll_interval = self.imap_config.get("poll_interval", 60)
+        self.mailbox = self.imap_config.get("mailbox", "INBOX")
 
-        # Security manager for signing events
-        self.security = SecurityManager(config.get("security_key", ""))
+        self._poll_task = None
 
-        self._stop_event = asyncio.Event()
-        self._imap_client = None  # Will hold the IMAP connection
+    @property
+    def platform_name(self) -> str:
+        return "email_imap"
 
-    async def start(self):
-        self.logger.info("Starting IMAP Email Adapter polling")
-        while not self._stop_event.is_set():
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Denne adapter kan kun modtage (via polling), ikke sende
+        return AdapterCapabilities(supported_capabilities=set())
+
+    @property
+    def metadata(self) -> AdapterMetadata:
+        return AdapterMetadata(
+            platform="email_imap",
+            display_name="IMAP Listener",
+            version="1.1.1",
+            author="Michael Landbo",
+            description="Polls IMAP inbox for new messages"
+        )
+
+    # --- Lifecycle ---
+
+    async def _setup_platform(self) -> None:
+        """Starter polling loopet"""
+        self.logger.info(f"Starting IMAP Polling on {self.host} every {self.poll_interval}s")
+        self._poll_task = asyncio.create_task(self._poll_loop())
+
+    async def stop(self) -> None:
+        if self._poll_task:
+            self._poll_task.cancel()
+        await super().stop()
+
+    async def send_message(self, context, message) -> SendResult:
+        return SimpleSendResult(False, error_message="IMAP Adapter is read-only. Use SMTP Adapter to send.")
+
+    async def handle_platform_event(self, event): pass
+    async def handle_command(self, command): return {}
+
+    # --- Polling Logic ---
+
+    async def _poll_loop(self):
+        while not self._shutdown_event.is_set():
             try:
-                await self._poll_mailbox()
+                # Dette er et blokerende kald, så vi kører det i en executor for ikke at fryse async loopet
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._sync_check_mail)
             except Exception as e:
-                self.logger.error(f"Error polling mailbox: {e}")
-                self.metrics.increment("imap_email.poll_errors")
+                self.logger.error(f"IMAP Polling Error: {e}")
+
             await asyncio.sleep(self.poll_interval)
 
-    async def stop(self):
-        self.logger.info("Stopping IMAP Email Adapter")
-        self._stop_event.set()
-        if self._imap_client:
-            try:
-                self._imap_client.logout()
-            except Exception:
-                pass
-
-    async def _poll_mailbox(self):
-        self.logger.debug("Connecting to IMAP server")
-        if self.use_ssl:
-            mail = imaplib.IMAP4_SSL(self.host, self.port)
-        else:
-            mail = imaplib.IMAP4(self.host, self.port)
-
-        mail.login(self.username, self.password)
-        mail.select(self.mailbox)
-
-        # Search for unseen emails
-        status, messages = mail.search(None, "(UNSEEN)")
-        if status != "OK":
-            self.logger.error("Failed to search mailbox")
-            mail.logout()
-            self.metrics.increment("imap_email.search_failures")
-            return
-
-        email_ids = messages[0].split()
-        self.logger.info(f"Found {len(email_ids)} new emails")
-        self.metrics.gauge("imap_email.unseen_emails", len(email_ids))
-
-        for eid in email_ids:
-            status, msg_data = mail.fetch(eid, "(RFC822)")
-            if status != "OK":
-                self.logger.error(f"Failed to fetch email id {eid}")
-                self.metrics.increment("imap_email.fetch_failures")
-                continue
-
-            raw_email = msg_data[0][1]
-            msg = email.message_from_bytes(raw_email)
-
-            # Parse email content
-            parsed_email = self._parse_email(msg)
-
-            # Send to orchestrator as UBP event
-            ubp_event = {
-                "event_type": "email.imap.message.received",
-                "platform": "email_imap",
-                "timestamp": parsed_email.get("date"),
-                "content": parsed_email,
-                "adapter_id": self.adapter_id,
-            }
-            await self.send_event_to_orchestrator(ubp_event)
-
-            # Mark as seen
-            mail.store(eid, "+FLAGS", "\\Seen")
-
-        mail.logout()
-
-    def _parse_email(self, msg) -> Dict[str, Any]:
-        subject = msg.get("Subject", "")
-        from_ = msg.get("From", "")
-        to = msg.get("To", "")
-        date = msg.get("Date", "")
-        body = ""
-        attachments = []
-
-        if msg.is_multipart():
-            for part in msg.walk():
-                content_type = part.get_content_type()
-                disposition = str(part.get("Content-Disposition"))
-                if content_type == "text/plain" and "attachment" not in disposition:
-                    body += part.get_payload(decode=True).decode(errors="ignore")
-                elif "attachment" in disposition:
-                    attachments.append(
-                        {
-                            "filename": part.get_filename(),
-                            "content_type": content_type,
-                            "size": len(part.get_payload(decode=True)),
-                        }
-                    )
-        else:
-            body = msg.get_payload(decode=True).decode(errors="ignore")
-
-        return {
-            "subject": subject,
-            "from": from_,
-            "to": to,
-            "date": date,
-            "body": body,
-            "attachments": attachments,
-        }
-
-    async def send_event_to_orchestrator(self, event: Dict[str, Any]):
-        """
-        Send parsed email event to UBP Orchestrator with security, observability, and retry.
-        """
+    def _sync_check_mail(self):
+        """Synkron metode der kører i en tråd. Håndterer IMAP forbindelsen."""
         try:
-            if not hasattr(self, "orchestrator_ws") or self.orchestrator_ws is None:
-                self.logger.warning(
-                    "No orchestrator connection available, dropping event"
-                )
-                self.metrics.increment("imap_email.events.dropped")
+            mail = imaplib.IMAP4_SSL(self.host, self.port)
+            mail.login(self.username, self.password)
+            mail.select(self.mailbox)
+
+            # Søg efter ulæste beskeder
+            status, messages = mail.search(None, "(UNSEEN)")
+            if status != "OK":
+                mail.logout()
                 return
 
-            # Sign message
-            event_json = json.dumps(event)
-            signature = self.security.sign_message(event_json)
+            email_ids = messages[0].split()
+            if not email_ids:
+                mail.logout()
+                return
 
-            payload = {
-                "message": event,
-                "signature": signature,
-            }
+            self.logger.info(f"IMAP: Found {len(email_ids)} new emails")
 
-            await self.orchestrator_ws.send(json.dumps(payload))
-            self.metrics.increment("imap_email.events.sent")
-            self.logger.info(f"Sent event to orchestrator: {event['event_type']}")
+            for e_id in email_ids:
+                _, msg_data = mail.fetch(e_id, "(RFC822)")
+                for response_part in msg_data:
+                    if isinstance(response_part, tuple):
+                        msg = email.message_from_bytes(response_part[1])
 
+                        # Kør async processering thread-safe og VENT på resultatet
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._process_email(msg),
+                            asyncio.get_running_loop()
+                        )
+
+                        try:
+                            # Vent på at beskeden er afleveret til systemet før vi markerer som læst
+                            future.result(timeout=10)
+
+                            # Mark as read (når vi er her, gik processeringen godt)
+                            mail.store(e_id, "+FLAGS", "\\Seen")
+                        except Exception as e:
+                            self.logger.error(f"Failed to process email {e_id}: {e}")
+
+            mail.logout()
         except Exception as e:
-            self.logger.error(f"Failed to send event to orchestrator: {e}")
-            self.metrics.increment("imap_email.events.failed")
+            self.logger.error(f"Sync IMAP Error: {e}")
+
+    async def _process_email(self, msg):
+        """Konverter og send til UBP"""
+        subject, encoding = decode_header(msg["Subject"])[0]
+        if isinstance(subject, bytes):
+            subject = subject.decode(encoding or "utf-8")
+
+        sender = msg.get("From")
+
+        # Simpel body extraction (kun text/plain)
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        body = payload.decode(errors="ignore")
+                    break
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                body = payload.decode(errors="ignore")
+
+        # Context
+        context = AdapterContext(
+            tenant_id="default",
+            user_id=sender,
+            channel_id=sender, # For email er kanal og bruger ofte det samme (afsender)
+            extras={"subject": subject}
+        )
+
+        # Payload
+        payload = {
+            "type": "text",
+            "content": body,
+            "metadata": {"subject": subject, "source": "email_imap"}
+        }
+
+        # Send til systemet
+        if self.connected:
+            await self._send_to_orchestrator({
+                "type": "user_message",
+                "context": context.to_dict(),
+                "payload": payload
+            })
+            self.metrics["messages_received"] += 1
