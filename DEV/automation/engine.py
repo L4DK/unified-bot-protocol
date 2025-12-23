@@ -1,4 +1,10 @@
-# automation/engine.py
+# FilePath: "/DEV/automation/engine.py"
+# Projekt: Unified Bot Protocol (UBP)
+# Beskrivelse: Automation Engine der kører regler, triggers og handlinger (Actions).
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Version: "v.1.0.0"
+
 from typing import Dict, List, Any, Optional, Callable
 from enum import Enum
 import asyncio
@@ -10,6 +16,8 @@ from datetime import datetime, timedelta
 import pytz
 import re
 from collections import defaultdict
+
+logger = logging.getLogger("ubp.automation")
 
 class TriggerType(Enum):
     MESSAGE = "message"
@@ -47,7 +55,7 @@ class AutomationRule(BaseModel):
 
 class AutomationEngine:
     def __init__(self):
-        self.logger = logging.getLogger("automation_engine")
+        self.logger = logging.getLogger("ubp.automation_engine")
         self.rules: Dict[str, AutomationRule] = {}
         self.triggers: Dict[str, List[str]] = defaultdict(list)
         self.action_handlers: Dict[str, Callable] = {}
@@ -106,10 +114,11 @@ class AutomationEngine:
         try:
             # Find matching rules
             matching_rules = []
-            for rule_id in self.triggers[event_type]:
-                rule = self.rules[rule_id]
-                if rule.enabled and await self._check_conditions(rule, event_data):
-                    matching_rules.append(rule)
+            if event_type in self.triggers:
+                for rule_id in self.triggers[event_type]:
+                    rule = self.rules[rule_id]
+                    if rule.enabled and await self._check_conditions(rule, event_data):
+                        matching_rules.append(rule)
 
             # Sort by priority
             matching_rules.sort(key=lambda r: r.priority, reverse=True)
@@ -153,7 +162,8 @@ class AutomationEngine:
                     self.logger.error(
                         f"Action error in rule {rule.name}: {str(e)}"
                     )
-                    if rule.error_handling["action_error"] == "stop":
+                    error_policy = rule.error_handling.get("action_error", "stop")
+                    if error_policy == "stop":
                         break
 
             self.metrics["rules_executed"] += 1
@@ -195,14 +205,15 @@ class AutomationEngine:
         context: Dict
     ) -> Dict:
         """Handle send message action"""
-        platform = action["platform"]
+        platform = action.get("platform", "default")
+        message_template = action.get("message", "")
         message = self._interpolate_variables(
-            action["message"],
+            message_template,
             context["variables"]
         )
 
-        # Send message through appropriate platform adapter
-        # Implementation depends on platform adapter integration
+        # TODO: Integrate with MessageRouter here to actually send
+        self.logger.info(f"[MOCK] Sending message to {platform}: {message}")
 
         return {"message_sent": True, "platform": platform}
 
@@ -213,18 +224,25 @@ class AutomationEngine:
     ) -> Dict:
         """Handle API call action"""
         url = self._interpolate_variables(action["url"], context["variables"])
-        method = action["method"]
+        method = action.get("method", "GET")
         headers = action.get("headers", {})
         body = action.get("body", {})
 
-        async with aiohttp.ClientSession() as session:
-            async with session.request(
-                method,
-                url,
-                headers=headers,
-                json=body
-            ) as response:
-                return await response.json()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=body
+                ) as response:
+                    try:
+                        return await response.json()
+                    except:
+                        return {"text": await response.text(), "status": response.status}
+        except Exception as e:
+            self.logger.error(f"API Call failed: {e}")
+            raise
 
     async def _handle_wait(
         self,
@@ -232,7 +250,7 @@ class AutomationEngine:
         context: Dict
     ) -> Dict:
         """Handle wait action"""
-        duration = action["duration"]
+        duration = action.get("duration", 0)
         await asyncio.sleep(duration)
         return {"waited": duration}
 
@@ -242,9 +260,10 @@ class AutomationEngine:
         context: Dict
     ) -> Dict:
         """Handle AI task action"""
-        task_type = action["task_type"]
+        task_type = action.get("task_type")
+        input_template = action.get("input", "")
         input_data = self._interpolate_variables(
-            action["input"],
+            input_template,
             context["variables"]
         )
 
@@ -267,21 +286,22 @@ class AutomationEngine:
         context: Dict
     ) -> Dict:
         """Handle data transformation action"""
-        transform_type = action["transform_type"]
+        transform_type = action.get("transform_type")
+        input_template = action.get("input", "")
         input_data = self._interpolate_variables(
-            action["input"],
+            input_template,
             context["variables"]
         )
 
         if transform_type == "json_path":
             result = self._apply_json_path(
                 input_data,
-                action["path"]
+                action.get("path", "")
             )
         elif transform_type == "template":
             result = self._apply_template(
                 input_data,
-                action["template"]
+                action.get("template", "")
             )
         else:
             result = input_data
@@ -298,8 +318,14 @@ class AutomationEngine:
         if "message" not in event_data:
             return False
 
-        text = event_data["message"].get("text", "").lower()
-        keywords = [k.lower() for k in condition["keywords"]]
+        # Handle both dict and string message formats
+        msg_obj = event_data["message"]
+        if isinstance(msg_obj, dict):
+            text = msg_obj.get("text", "").lower()
+        else:
+            text = str(msg_obj).lower()
+
+        keywords = [k.lower() for k in condition.get("keywords", [])]
 
         if condition.get("match_type") == "any":
             return any(k in text for k in keywords)
@@ -312,14 +338,18 @@ class AutomationEngine:
     ) -> bool:
         """Check if current time is between specified times"""
         now = datetime.now(pytz.UTC)
-        start_time = datetime.strptime(
-            condition["start_time"],
-            "%H:%M"
-        ).time()
-        end_time = datetime.strptime(
-            condition["end_time"],
-            "%H:%M"
-        ).time()
+        try:
+            start_time = datetime.strptime(
+                condition["start_time"],
+                "%H:%M"
+            ).time()
+            end_time = datetime.strptime(
+                condition["end_time"],
+                "%H:%M"
+            ).time()
+        except ValueError:
+            self.logger.error("Invalid time format in condition")
+            return False
 
         current_time = now.time()
         return start_time <= current_time <= end_time
@@ -334,8 +364,8 @@ class AutomationEngine:
             return False
 
         user = event_data["user"]
-        property_name = condition["property"]
-        expected_value = condition["value"]
+        property_name = condition.get("property")
+        expected_value = condition.get("value")
 
         return user.get(property_name) == expected_value
 
@@ -345,9 +375,9 @@ class AutomationEngine:
         event_data: Dict
     ) -> bool:
         """Check if metric meets threshold"""
-        metric_name = condition["metric"]
-        threshold = condition["threshold"]
-        operator = condition["operator"]
+        metric_name = condition.get("metric")
+        threshold = condition.get("threshold", 0)
+        operator = condition.get("operator", "eq")
 
         current_value = self.metrics[metric_name]
 
@@ -368,10 +398,11 @@ class AutomationEngine:
         if "message" not in event_data:
             return False
 
-        text = event_data["message"].get("text", "")
-        sentiment = await self._analyze_sentiment(text)
+        msg_obj = event_data["message"]
+        text = msg_obj.get("text", "") if isinstance(msg_obj, dict) else str(msg_obj)
 
-        return sentiment == condition["sentiment"]
+        sentiment = await self._analyze_sentiment(text)
+        return sentiment == condition.get("sentiment")
 
     # Utility Methods
     def _interpolate_variables(
@@ -380,31 +411,37 @@ class AutomationEngine:
         variables: Dict
     ) -> str:
         """Replace variables in template with actual values"""
+        if not isinstance(template, str):
+            return template
+
         for key, value in variables.items():
             template = template.replace(f"${{{key}}}", str(value))
         return template
 
-    def _apply_json_path(self, data: Dict, path: str) -> Any:
+    def _apply_json_path(self, data: Any, path: str) -> Any:
         """Apply JSONPath expression to data"""
-        # Implementation using jsonpath-ng or similar library
-        pass
+        # Placeholder implementation
+        # TODO: Install 'jsonpath-ng' and implement real logic
+        return data
 
     def _apply_template(self, data: Dict, template: str) -> str:
         """Apply template to data"""
-        # Implementation using Jinja2 or similar library
-        pass
+        # Placeholder implementation
+        # TODO: Install 'jinja2' and implement real logic
+        return template
 
     async def _analyze_sentiment(self, text: str) -> str:
         """Analyze text sentiment"""
-        # Implementation using AI service
-        pass
+        # Mock implementation
+        # TODO: Connect to AI Enhancer
+        return "neutral"
 
     async def _generate_content(self, prompt: str) -> str:
         """Generate content using AI"""
-        # Implementation using AI service
-        pass
+        # Mock implementation
+        return f"Generated content for: {prompt}"
 
     async def _classify_content(self, text: str) -> str:
         """Classify content using AI"""
-        # Implementation using AI service
-        pass
+        # Mock implementation
+        return "general"
