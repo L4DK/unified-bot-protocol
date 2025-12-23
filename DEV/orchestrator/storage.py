@@ -3,8 +3,8 @@
 # Description: In-memory storage implementation for bot definitions and credentials.
 #              Designed to be replaced by Redis/PostgreSQL in production.
 # Author: "Michael Landbo"
-# Date created: "2025/09/19"
-# Date Modified: "2025/12/21"
+# Date created: "21/12/2025"
+# Date Modified: "21/12/2025"
 # Version: "v.1.0.0"
 
 from typing import Dict, List, Optional
@@ -16,16 +16,16 @@ from .models import BotDefinition, BotCredentials
 class BotStorage:
     """
     Handles bot definition and credential storage.
-    
+
     Current Implementation: In-Memory (Dict)
     Future Roadmap: Migrate to Redis or PostgreSQL for persistence.
     """
-    
+
     def __init__(self):
         # In-memory stores
         self._definitions: Dict[str, BotDefinition] = {}
         self._credentials: Dict[str, BotCredentials] = {}
-        
+
         # Concurrency lock to ensure thread/task safety during writes
         self._lock = asyncio.Lock()
 
@@ -84,4 +84,3 @@ class BotStorage:
         if not creds or not creds.api_key:
             return False
         return creds.api_key == api_key
-
