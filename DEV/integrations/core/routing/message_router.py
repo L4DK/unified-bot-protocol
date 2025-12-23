@@ -20,10 +20,10 @@
 # - 1.0.0: Initial routing engine with basic adapter selection
 
 from __future__ import annotations
-from typing import Dict, List, Any, Optional, Tuple, Set, Union
+from typing import Dict, List, Any, Optional, Tuple, Set, Union, Callable, Type, Any
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import asyncio
 import logging
@@ -38,16 +38,16 @@ from contextlib import asynccontextmanager
 try:
     from .policy_engine import PolicyEngine, PolicyDecision
     from .circuit_breaker import CircuitBreaker
-    from ..adapters.base import AdapterRegistry, AdapterContext, PlatformAdapter, AdapterStatus
+    from adapters.base import AdapterRegistry, AdapterContext, PlatformAdapter, AdapterStatus
 except ImportError:
     # Fallback for standalone testing
-    PolicyEngine = None
-    PolicyDecision = None
-    CircuitBreaker = None
-    AdapterRegistry = None
-    AdapterContext = None
-    PlatformAdapter = None
-    AdapterStatus = None
+    PolicyEngine = Any
+    PolicyDecision = Any
+    CircuitBreaker = Any
+    AdapterRegistry = Any
+    AdapterContext = Any
+    PlatformAdapter = Any
+    AdapterStatus = Any
 
 # =========================
 # Core Enums & Data Models
@@ -108,8 +108,19 @@ class RoutingMetrics:
     idempotent_hits: int = 0
     cache_hits: int = 0
     avg_response_time: float = 0.0
+
+    # Core breakdowns
     routes_by_strategy: Dict[str, int] = field(default_factory=dict)
     routes_by_platform: Dict[str, int] = field(default_factory=dict)
+
+    # Extended metrics (Added per your request)
+    routes_by_health: Dict[str, int] = field(default_factory=dict)
+    routes_by_status: Dict[str, int] = field(default_factory=dict)
+    routes_by_priority: Dict[str, int] = field(default_factory=dict)
+    routes_by_confidence: Dict[str, int] = field(default_factory=dict)
+    routes_by_score: Dict[str, int] = field(default_factory=dict)
+    routes_by_latency: Dict[str, int] = field(default_factory=dict)
+    routes_by_fallback: Dict[str, int] = field(default_factory=dict)
 
 @dataclass
 class RouteConfiguration:
@@ -126,7 +137,7 @@ class RouteConfiguration:
     timeout_seconds: float = 30.0
     retry_config: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     usage_count: int = 0
 
 # ===================
@@ -170,13 +181,9 @@ class LoadBalancer:
         # Metrics
         self.metrics = RoutingMetrics()
 
-    def add_route(
-        self,
-        route_config: RouteConfiguration
-    ) -> None:
+    def add_route(self, route_config: RouteConfiguration) -> None:
         """Add a route configuration to the load balancer"""
         route_id = route_config.route_id
-
         self.routes[route_id] = route_config
         self.weights[route_id] = route_config.weight
         self.health_status[route_id] = RouteHealth.HEALTHY
@@ -326,7 +333,6 @@ class LoadBalancer:
         content_length = len(message.get("content", ""))
         has_media = bool(message.get("media") or message.get("attachments"))
 
-        # Score routes based on content compatibility
         route_scores = {}
         for route_id in routes:
             score = 0.0
@@ -361,20 +367,17 @@ class LoadBalancer:
 
             route_scores[route_id] = score
 
-        # Select route with highest score
         if route_scores:
             return max(route_scores.keys(), key=lambda r: route_scores[r])
 
         return random.choice(routes)
 
     async def _ai_optimized_select(self, routes: List[str], context: Dict[str, Any]) -> str:
-        """AI-optimized route selection using multiple factors"""
-        # This would integrate with ML models in production
-        # For now, implement a sophisticated heuristic approach
-
+        """AI-optimized route selection using multiple factors (Heuristic approach)"""
         route_scores = {}
-        current_time = datetime.utcnow()
+        current_time = datetime.datetime.now(datetime.timezone.utc)
 
+        # Calculate scores for each route
         for route_id in routes:
             score = 0.0
 
@@ -438,7 +441,6 @@ class LoadBalancer:
         if not required_capabilities:
             return self._response_time_select(routes, context)
 
-        # Filter routes by capability support
         capable_routes = []
         for route_id in routes:
             route_config = self.routes.get(route_id)
@@ -452,7 +454,6 @@ class LoadBalancer:
         if capable_routes:
             return self._response_time_select(capable_routes, context)
         else:
-            # Fallback to best available route
             self.logger.warning(f"No routes support required capabilities: {required_capabilities}")
             return self._response_time_select(routes, context)
 
@@ -460,7 +461,6 @@ class LoadBalancer:
         """Select route based on geographic proximity"""
         user_region = context.get("user_region", "unknown")
 
-        # Score routes by geographic proximity
         route_scores = {}
         for route_id in routes:
             route_config = self.routes.get(route_id)
@@ -516,24 +516,19 @@ class LoadBalancer:
 
     def _get_avg_response_time(self, route_id: str) -> float:
         """Get average response time for a route"""
-        # Check cache first
         cached = self._performance_cache.get(route_id)
         if cached and datetime.utcnow() - cached["last_updated"] < self._cache_ttl:
             return cached["avg_response_time"]
 
-        # Calculate from raw data
         times = self.response_times.get(route_id, deque())
         if not times:
             return 0.0
 
         avg_time = sum(times) / len(times)
-
-        # Update cache
         self._performance_cache[route_id] = {
             "avg_response_time": avg_time,
             "last_updated": datetime.utcnow()
         }
-
         return avg_time
 
     def get_route_stats(self, route_id: str) -> Dict[str, Any]:
@@ -574,7 +569,7 @@ class SimpleCircuitBreaker:
             return True
         elif self.state == "OPEN":
             if self.last_failure_time and \
-               time.time() - self.last_failure_time > self.recovery_timeout:
+                time.time() - self.last_failure_time > self.recovery_timeout:
                 self.state = "HALF_OPEN"
                 return True
             return False
@@ -619,8 +614,8 @@ class MessageRouter:
 
     def __init__(
         self,
-        adapter_registry: Optional[AdapterRegistry] = None,
-        policy_engine: Optional[PolicyEngine] = None,
+        adapter_registry: Optional["AdapterRegistry"] = None, # type: ignore
+        policy_engine: Optional["PolicyEngine"] = None, # type: ignore
         config: Optional[Dict[str, Any]] = None
     ):
         self.config = config or {}
@@ -637,7 +632,7 @@ class MessageRouter:
         self.routing_rules: List[Dict[str, Any]] = []
 
         # Circuit breakers per adapter
-        self.circuit_breakers: Dict[str, CircuitBreaker] = defaultdict(
+        self.circuit_breakers: Dict[str, "CircuitBreaker"] = defaultdict( # type: ignore
             lambda: CircuitBreaker(
                 failure_threshold=self.config.get("circuit_breaker_threshold", 5),
                 recovery_timeout=self.config.get("circuit_breaker_timeout", 60)
@@ -1094,12 +1089,6 @@ class MessageRouter:
     ) -> Dict[str, Any]:
         """
         Execute the selected route with comprehensive error handling.
-
-        Technical Implementation:
-        - Policy evaluation for security compliance
-        - Circuit breaker protection
-        - Retry logic with exponential backoff
-        - Performance monitoring and metrics collection
         """
         route_id = route_decision.route_id
         adapter_id = route_decision.adapter_id
@@ -1374,6 +1363,10 @@ class MessageRouter:
     # Caching & Idempotency
     # ==================
 
+    # ==================
+    # Caching & Idempotency
+    # ==================
+
     def _generate_cache_key(self, message: Dict[str, Any], context: Dict[str, Any]) -> str:
         """Generate cache key for route decisions"""
         key_data = {
@@ -1554,8 +1547,8 @@ class MessageRouter:
 # =================
 
 def create_message_router(
-    adapter_registry: Optional[AdapterRegistry] = None,
-    policy_engine: Optional[PolicyEngine] = None,
+    adapter_registry: Optional["AdapterRegistry"] = None, # type: ignore
+    policy_engine: Optional["PolicyEngine"] = None, # type: ignore
     config: Optional[Dict[str, Any]] = None
 ) -> MessageRouter:
     """Factory function to create a MessageRouter instance"""
