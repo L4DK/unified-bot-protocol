@@ -1,0 +1,25 @@
+# File: mqtt_config.yaml
+# MQTT Configuration
+mqtt:
+  broker_host: "localhost" # or "test.mosquitto.org" for test
+  broker_port: 1883
+  username: ""
+  password: ""
+  client_id: "ubp_adapter_v1"
+  subscriptions:
+    - "sensors/#" # Listen on all sensors
+    - "home/kitchen/light"
+    - "home/livingroom/temperature"
+
+  keepalive: 60
+  qos: 1
+  use_tls: false
+
+  # Optional
+  ca_cert: ""
+  client_cert: ""
+  client_key: ""
+  use_webhooks: false
+
+  # Debugging
+  mqtt_debug: false
