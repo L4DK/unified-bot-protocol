@@ -1,17 +1,41 @@
-# integrations/iot/smart_device.py
-from ..core.universal_connector import (
-    BaseIntegration,
-    IntegrationMetadata,
-    IntegrationType,
-    ProtocolType,
-    SecurityLevel,
-    IntegrationCapability
-)
+# FilePath: "/DEV/integrations/iot/smart_device.py"
+# Project: Unified Bot Protocol (UBP)
+# Description: IoT Integration layer for Smart Devices (TVs, Lights, etc.).
+#              Extends the Universal Connector to support device-specific commands.
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Version: "v.1.0.0"
+
+from typing import Dict, Any, List, Optional, Union
 from enum import Enum
 import asyncio
-import aiohttp
-import json
+import uuid
+import logging
 from datetime import datetime
+
+# Relative import to core connector
+# Ensure DEV/integrations is treated as a package
+try:
+    from ..core.universal_connector import (
+        BaseIntegration,
+        IntegrationMetadata,
+        IntegrationType,
+        ProtocolType,
+        SecurityLevel,
+        IntegrationCapability
+    )
+except ImportError:
+    # Fallback for direct execution testing
+    from integrations.core.universal_connector import (
+        BaseIntegration,
+        IntegrationMetadata,
+        IntegrationType,
+        ProtocolType,
+        SecurityLevel,
+        IntegrationCapability
+    )
+
+logger = logging.getLogger(__name__)
 
 class DeviceType(Enum):
     TV = "tv"
@@ -36,7 +60,7 @@ class DeviceCapability(Enum):
     LOCK_STATE = "lock_state"
 
 class SmartDeviceIntegration(BaseIntegration):
-    """Integration for smart devices"""
+    """Integration for generic smart devices"""
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -47,7 +71,7 @@ class SmartDeviceIntegration(BaseIntegration):
     @property
     def metadata(self) -> IntegrationMetadata:
         return IntegrationMetadata(
-            id="smart_device",
+            id="smart_device_generic",
             name="Smart Device Integration",
             type=IntegrationType.IOT,
             version="1.0.0",
@@ -72,7 +96,6 @@ class SmartDeviceIntegration(BaseIntegration):
                     protocol=ProtocolType.REST,
                     security=SecurityLevel.TOKEN
                 ),
-                # Add other capabilities...
             ],
             provider="universal",
             documentation_url="https://example.com/docs",
@@ -87,9 +110,28 @@ class SmartDeviceIntegration(BaseIntegration):
         await self._discover_devices()
         asyncio.create_task(self._process_command_queue())
 
+    async def shutdown(self):
+        await super().shutdown()
+        # Clean up queue processor if needed (not implemented here for simplicity)
+
+    async def execute_capability(self, capability_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a capability via the base class interface"""
+        if capability_name == "device.discover":
+            return {"devices": list(self.devices.values())}
+
+        if capability_name == "device.control":
+            return await self.control_device(
+                parameters.get("device_id"),
+                parameters.get("command"), # Mapping command string to enum required in real impl
+                parameters.get("parameters", {})
+            )
+
+        raise NotImplementedError(f"Capability {capability_name} not supported")
+
     async def _discover_devices(self):
         """Discover available devices"""
         # Implement discovery protocols (UPnP, mDNS, etc.)
+        logger.info("Starting device discovery...")
         pass
 
     async def _process_command_queue(self):
@@ -100,6 +142,8 @@ class SmartDeviceIntegration(BaseIntegration):
                 await self._execute_device_command(command)
             except Exception as e:
                 self.logger.error(f"Command execution error: {str(e)}")
+            finally:
+                self.command_queue.task_done()
             await asyncio.sleep(0.1)
 
     async def _execute_device_command(self, command: Dict):
@@ -110,26 +154,27 @@ class SmartDeviceIntegration(BaseIntegration):
         if not device:
             raise ValueError(f"Device {device_id} not found")
 
-        protocol = device["protocol"]
+        protocol = device.get("protocol", "http")
 
         if protocol == "http":
-            await self._execute_http_command(device, command)
+            # await self._execute_http_command(device, command)
+            logger.info(f"Executing HTTP command on {device_id}: {command}")
         elif protocol == "mqtt":
-            await self._execute_mqtt_command(device, command)
-        # Add other protocols...
+            # await self._execute_mqtt_command(device, command)
+            logger.info(f"Executing MQTT command on {device_id}: {command}")
 
     async def control_device(
         self,
         device_id: str,
-        capability: DeviceCapability,
+        capability: Union[DeviceCapability, str],
         parameters: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Control a smart device"""
         command = {
             "device_id": device_id,
-            "capability": capability,
+            "capability": capability if isinstance(capability, str) else capability.value,
             "parameters": parameters,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow().isoformat()
         }
 
         await self.command_queue.put(command)
@@ -182,7 +227,7 @@ class SmartTVIntegration(SmartDeviceIntegration):
 
     async def initialize(self):
         await super().initialize()
-        self.supported_protocols = ["http", "websocket"]
+        # Additional setup for TV protocols
 
     async def turn_on(self, device_id: str) -> Dict[str, Any]:
         return await self.control_device(
