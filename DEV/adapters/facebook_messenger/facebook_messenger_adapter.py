@@ -1,239 +1,248 @@
 """
-Facebook Messenger Platform Adapter for Unified Bot Protocol (UBP)
-==================================================================
-
-File: facebook_messenger_adapter.py
+FilePath: "/adapters/facebook_messenger/facebook_messenger_adapter.py"
 Project: Unified Bot Protocol (UBP)
-Version: 1.0.0
-Last Edited: 2025-09-19
-Author: Michael Landbo (UBP BDFL)
-License: Apache-2.0
-
-Description:
-Production-grade Facebook Messenger adapter for UBP.
-Handles inbound webhook events, outbound message sending,
-security verification, observability, and resilience.
-
-Features:
-- Webhook verification and signature validation
-- Async webhook event processing
-- Secure event signing before sending to UBP Orchestrator
-- Outbound message sending with error handling and metrics
-- Structured logging and metrics collection
-- Graceful shutdown and resource cleanup
+Component: Facebook Messenger Adapter
+Version: 1.1.0 (Refactored for BaseAdapter 1.3.0)
 """
 
 import asyncio
-import logging
-import hmac
 import hashlib
+import hmac
+import logging
 import json
 from typing import Dict, Any, Optional
 
-from aiohttp import web, ClientSession, ClientResponseError
+from aiohttp import web, ClientSession
 
-from ubp_core.platform_adapter import BasePlatformAdapter, AdapterCapabilities
-from ubp_core.security import SecurityManager
-from ubp_core.observability import StructuredLogger, MetricsCollector
+# Import Base Adapter Classes
+from adapters.base_adapter import (
+    PlatformAdapter,
+    AdapterCapabilities,
+    AdapterMetadata,
+    AdapterContext,
+    PlatformCapability,
+    SendResult,
+    SimpleSendResult,
+    AdapterStatus
+)
 
-
-class FacebookMessengerAdapter(BasePlatformAdapter):
-    adapter_id = "facebook_messenger"
-    display_name = "Facebook Messenger"
-    capabilities = AdapterCapabilities(
-        supports_text=True,
-        supports_media=True,
-        supports_buttons=True,
-        supports_threads=False,
-    )
+class FacebookMessengerAdapter(PlatformAdapter):
+    """
+    Official UBP Facebook Messenger Adapter.
+    Handles Webhook events from Meta and sends messages via Graph API.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.app_secret: str = config["app_secret"]
-        self.page_access_token: str = config["page_access_token"]
-        self.verify_token: Optional[str] = config.get("verify_token")
-        self.logger = StructuredLogger("facebook_messenger_adapter")
-        self.metrics = MetricsCollector("facebook_messenger_adapter")
-        self.security = SecurityManager(config.get("security_key", ""))
-        self.http_session = ClientSession()
-        self._webhook_app = web.Application()
-        self._setup_routes()
+
+        # FB Config
+        self.fb_config = config.get('facebook_messenger', config)
+        self.app_secret = self.fb_config.get("app_secret")
+        self.page_access_token = self.fb_config.get("page_access_token")
+        self.verify_token = self.fb_config.get("verify_token")
+        self.port = self.fb_config.get("port", 8080)
+        self.host = self.fb_config.get("host", "0.0.0.0")
+
+        if not self.page_access_token or not self.app_secret:
+            self.logger.error("Facebook Messenger config missing 'page_access_token' or 'app_secret'")
+
+        # Webhook Server State
+        self._app = web.Application()
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
 
-    def _setup_routes(self):
-        self._webhook_app.router.add_get("/webhook", self._handle_verification)
-        self._webhook_app.router.add_post("/webhook", self._handle_webhook_event)
+    # --- Properties ---
 
-    async def start(self, host: str = "0.0.0.0", port: int = 8080):
-        """Start the webhook HTTP server."""
-        self.logger.info(f"Starting Facebook Messenger webhook server on {host}:{port}")
-        self._runner = web.AppRunner(self._webhook_app)
+    @property
+    def platform_name(self) -> str:
+        return "facebook_messenger"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_capabilities={
+                PlatformCapability.SEND_MESSAGE,
+                PlatformCapability.SEND_IMAGE,
+                PlatformCapability.SEND_BUTTONS,
+                PlatformCapability.SEND_CAROUSEL,
+                PlatformCapability.WEBHOOK_SUPPORT
+            },
+            max_message_length=2000,
+            supported_media_types=["image/jpeg", "image/png", "image/gif", "video/mp4", "audio/mpeg"],
+            rate_limits={"message.send": 250} # Facebook har høje limits
+        )
+
+    @property
+    def metadata(self) -> AdapterMetadata:
+        return AdapterMetadata(
+            platform="facebook_messenger",
+            display_name="Meta Messenger",
+            version="1.1.0",
+            author="Michael Landbo",
+            description="Facebook Messenger Graph API Integration",
+            supports_webhooks=True,
+            supports_real_time=True
+        )
+
+    # --- Lifecycle ---
+
+    async def _setup_platform(self) -> None:
+        """Starter webhook serveren"""
+        self._app.router.add_get("/webhook", self._handle_verification)
+        self._app.router.add_post("/webhook", self._handle_webhook_event)
+
+        self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, host, port)
+        self._site = web.TCPSite(self._runner, self.host, self.port)
         await self._site.start()
-        self.logger.info("Facebook Messenger webhook server started")
 
-    async def stop(self):
-        """Stop the webhook HTTP server and cleanup."""
-        self.logger.info("Stopping Facebook Messenger webhook server")
+        self.logger.info(f"Messenger Webhook listening on {self.host}:{self.port}")
+
+    async def stop(self) -> None:
         if self._site:
             await self._site.stop()
         if self._runner:
             await self._runner.cleanup()
-        await self.http_session.close()
-        self.logger.info("Facebook Messenger adapter stopped")
+        await super().stop()
 
-    async def _handle_verification(self, request: web.Request) -> web.Response:
-        """Handle Facebook webhook verification challenge."""
-        params = request.rel_url.query
-        mode = params.get("hub.mode")
-        token = params.get("hub.verify_token")
-        challenge = params.get("hub.challenge")
+    # --- Core Logic: Send Message ---
 
-        if mode == "subscribe" and token == self.verify_token:
-            self.logger.info("Webhook verification successful")
-            return web.Response(text=challenge)
-        else:
-            self.logger.warning("Webhook verification failed")
-            return web.Response(status=403)
-
-    async def _handle_webhook_event(self, request: web.Request) -> web.Response:
-        """Handle incoming webhook POST events from Facebook Messenger."""
-        signature = request.headers.get("X-Hub-Signature")
-        body = await request.read()
-
-        if not self._verify_signature(body, signature):
-            self.logger.warning("Invalid webhook signature")
-            self.metrics.increment("facebook_messenger.webhook.signature_failures")
-            return web.Response(status=403)
-
+    async def send_message(self, context: AdapterContext, message: Dict[str, Any]) -> SendResult:
+        """Sender besked til Facebook bruger (PSID)"""
         try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            self.logger.error("Invalid JSON payload received")
-            self.metrics.increment("facebook_messenger.webhook.invalid_json")
-            return web.Response(status=400)
+            recipient_id = context.channel_id or context.user_id # På FB er channel ofte = user PSID
 
-        await self._process_events(data)
-        return web.Response(status=200)
+            if not recipient_id:
+                return SimpleSendResult(False, error_message="Missing recipient ID (PSID)")
 
-    def _verify_signature(self, payload: bytes, signature: Optional[str]) -> bool:
-        """Verify X-Hub-Signature header using app secret."""
-        if not signature:
-            return False
-        try:
-            sha_name, signature_hash = signature.split("=")
-        except ValueError:
-            return False
-        if sha_name != "sha1":
-            return False
-        mac = hmac.new(self.app_secret.encode(), msg=payload, digestmod=hashlib.sha1)
-        return hmac.compare_digest(mac.hexdigest(), signature_hash)
-
-    async def _process_events(self, data: Dict[str, Any]):
-        """Process each messaging event and send to UBP Orchestrator."""
-        for entry in data.get("entry", []):
-            for messaging_event in entry.get("messaging", []):
-                ubp_event = self._convert_to_ubp_event(messaging_event)
-                if ubp_event:
-                    await self.send_event_to_orchestrator(ubp_event)
-
-    def _convert_to_ubp_event(
-        self, messaging_event: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """Convert Facebook Messenger event to UBP event schema."""
-        sender_id = messaging_event.get("sender", {}).get("id")
-        recipient_id = messaging_event.get("recipient", {}).get("id")
-        timestamp = messaging_event.get("timestamp")
-
-        event_type = None
-        content = {}
-
-        if "message" in messaging_event:
-            event_type = "facebook_messenger.message.received"
-            content = messaging_event["message"]
-        elif "postback" in messaging_event:
-            event_type = "facebook_messenger.postback.received"
-            content = messaging_event["postback"]
-        else:
-            self.logger.info(f"Unhandled messaging event: {messaging_event}")
-            return None
-
-        return {
-            "event_type": event_type,
-            "platform": "facebook_messenger",
-            "timestamp": timestamp,
-            "content": content,
-            "sender_id": sender_id,
-            "recipient_id": recipient_id,
-            "adapter_id": self.adapter_id,
-        }
-
-    async def send_event_to_orchestrator(self, event: Dict[str, Any]):
-        """Send event to UBP Orchestrator with signing and observability."""
-        try:
-            if not hasattr(self, "orchestrator_ws") or self.orchestrator_ws is None:
-                self.logger.warning(
-                    "No orchestrator connection available, dropping event"
-                )
-                self.metrics.increment("facebook_messenger.events.dropped")
-                return
-
-            event_json = json.dumps(event)
-            signature = self.security.sign_message(event_json)
+            url = f"https://graph.facebook.com/v16.0/me/messages"
+            params = {"access_token": self.page_access_token}
 
             payload = {
-                "message": event,
-                "signature": signature,
+                "recipient": {"id": recipient_id},
+                "messaging_type": "RESPONSE"
             }
 
-            await self.orchestrator_ws.send(json.dumps(payload))
-            self.metrics.increment("facebook_messenger.events.sent")
-            self.logger.info(f"Sent event to orchestrator: {event['event_type']}")
+            # Indhold
+            content_text = message.get("content")
+            if content_text:
+                payload["message"] = {"text": content_text}
+            elif message.get("attachment"):
+                # Simpel attachment håndtering
+                payload["message"] = {
+                    "attachment": {
+                        "type": message["attachment"].get("type", "image"),
+                        "payload": {
+                            "url": message["attachment"]["url"],
+                            "is_reusable": True
+                        }
+                    }
+                }
+
+            # Send Request via Base Class http_session
+            async with self.http_session.post(url, params=params, json=payload) as resp:
+                resp_data = await resp.json()
+
+                if resp.status != 200:
+                    return SimpleSendResult(
+                        success=False,
+                        error_message=f"FB API Error: {resp_data.get('error', {}).get('message')}",
+                        details=resp_data
+                    )
+
+                return SimpleSendResult(
+                    success=True,
+                    platform_message_id=resp_data.get("message_id"),
+                    details={"recipient_id": resp_data.get("recipient_id")}
+                )
 
         except Exception as e:
-            self.logger.error(f"Failed to send event to orchestrator: {e}")
-            self.metrics.increment("facebook_messenger.events.failed")
+            self.logger.error(f"FB Send Error: {e}")
+            return SimpleSendResult(success=False, error_message=str(e))
 
-    async def send_message(
-        self, context: Any, message: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Send message to Facebook Messenger via Send API.
+    # --- Webhook Handling ---
 
-        Expected message dict keys:
-          - recipient_id: str
-          - message: dict (Facebook Messenger message payload)
+    async def _handle_verification(self, request: web.Request) -> web.Response:
+        """Facebook Verify Token Check (bruges når du sætter webhook op)"""
+        mode = request.query.get("hub.mode")
+        token = request.query.get("hub.verify_token")
+        challenge = request.query.get("hub.challenge")
 
-        Returns:
-            Dict with success status and details.
-        """
-        recipient_id = message.get("recipient_id")
-        msg_payload = message.get("message")
+        if mode == "subscribe" and token == self.verify_token:
+            return web.Response(text=challenge)
+        return web.Response(status=403)
 
-        if not recipient_id or not msg_payload:
-            self.logger.error("Missing recipient_id or message payload")
-            return {"success": False, "error": "Missing recipient_id or message"}
+    async def _handle_webhook_event(self, request: web.Request) -> web.Response:
+        """Modtager beskeder fra brugere"""
+        # 1. Signatur Verifikation
+        signature = request.headers.get("X-Hub-Signature-256") # Eller X-Hub-Signature
+        body_bytes = await request.read()
 
-        url = f"https://graph.facebook.com/v15.0/me/messages?access_token={self.page_access_token}"
+        if self.app_secret and not self._verify_signature(body_bytes, signature):
+            self.logger.warning("Invalid FB Signature")
+            return web.Response(status=403)
+
+        data = await request.json()
+
+        if data.get("object") == "page":
+            for entry in data.get("entry", []):
+                # En entry kan indeholde flere messaging events
+                webhook_event = entry.get("messaging", [])[0]
+
+                sender_psid = webhook_event.get("sender", {}).get("id")
+
+                if "message" in webhook_event:
+                    await self._process_incoming_message(sender_psid, webhook_event["message"])
+                elif "postback" in webhook_event:
+                    await self._process_postback(sender_psid, webhook_event["postback"])
+
+            return web.Response(text="EVENT_RECEIVED")
+
+        return web.Response(status=404)
+
+    async def _process_incoming_message(self, sender_id: str, message_data: Dict):
+        """Konverter til UBP format"""
+        context = AdapterContext(
+            tenant_id="default",
+            user_id=sender_id,
+            channel_id=sender_id,
+            extras={"mid": message_data.get("mid")}
+        )
+
         payload = {
-            "recipient": {"id": recipient_id},
-            "message": msg_payload,
+            "type": "text",
+            "content": message_data.get("text", ""),
+            "metadata": {"source": "facebook_messenger"}
         }
 
-        try:
-            async with self.http_session.post(url, json=payload) as resp:
-                resp.raise_for_status()
-                resp_json = await resp.json()
-                self.metrics.increment("facebook_messenger.messages.sent")
-                self.logger.info(f"Message sent to {recipient_id}")
-                return {"success": True, "result": resp_json}
-        except ClientResponseError as e:
-            self.logger.error(f"Failed to send message: {e.status} {e.message}")
-            self.metrics.increment("facebook_messenger.messages.failed")
-            return {"success": False, "error": f"HTTP {e.status}: {e.message}"}
-        except Exception as e:
-            self.logger.error(f"Exception sending message: {e}")
-            self.metrics.increment("facebook_messenger.messages.failed")
-            return {"success": False, "error": str(e)}
+        # Attachments?
+        if "attachments" in message_data:
+            payload["type"] = "file"
+            payload["attachments"] = message_data["attachments"]
+
+        if self.connected:
+            await self._send_to_orchestrator({
+                "type": "user_message",
+                "context": context.to_dict(),
+                "payload": payload
+            })
+            self.metrics["messages_received"] += 1
+
+    async def _process_postback(self, sender_id: str, postback: Dict):
+        # Håndtering af knap-tryk
+        payload_data = postback.get("payload")
+        # Logik til at sende dette som en event eller besked til UBP...
+        pass
+
+    def _verify_signature(self, payload: bytes, signature: str) -> bool:
+        """Verificer HMAC SHA256"""
+        if not signature: return False
+        expected = "sha256=" + hmac.new(
+            key=self.app_secret.encode(),
+            msg=payload,
+            digestmod=hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
+    async def handle_platform_event(self, event): pass
+    async def handle_command(self, command): return {}
