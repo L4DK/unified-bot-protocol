@@ -1,4 +1,11 @@
-# orchestrator/security/zero_trust.py
+# FilePath: "/DEV/orchestrator/security/zero_trust.py"
+# Project: Unified Bot Protocol (UBP)
+# Description: Implements Zero Trust security logic (Certificate auth, Device fingerprinting, Behavioral analysis).
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Date Modified: "21/12/2025"
+# Version: "v.1.0.0"
+
 import json
 from typing import Dict, List, Optional, Tuple
 import jwt
@@ -12,11 +19,14 @@ import base64
 import os
 import datetime
 
+logger = logging.getLogger(__name__)
+
 class ZeroTrustManager:
     def __init__(self):
         self.session_store = {}
         self.device_fingerprints = {}
         self.trust_scores = {}
+        # In production, load this from a secure secret manager
         self.jwt_secret = os.urandom(32)
         self.certificate_store = {}
 
@@ -27,8 +37,8 @@ class ZeroTrustManager:
         context: Dict
     ) -> Tuple[bool, Dict]:
         """
-        Implement Zero Trust verification using multiple factors
-        Returns (is_verified, context)
+        Implement Zero Trust verification using multiple factors.
+        Returns (is_verified, context_with_results)
         """
         trust_score = 0
         verification_results = {}
@@ -64,6 +74,7 @@ class ZeroTrustManager:
         # Store trust score
         self.trust_scores[bot_id] = trust_score
 
+        # Threshold for verification (e.g., 70/100)
         return trust_score >= 70, {
             'trust_score': trust_score,
             'verification_results': verification_results
@@ -85,16 +96,14 @@ class ZeroTrustManager:
             if cert.not_valid_after is None or cert.not_valid_after < datetime.datetime.fromtimestamp(time.time()):
                 return False
 
-            # Define the backend variable
-            backend = default_backend()
-
-            # Verify the certificate
+            # Verify the certificate matches known store
             cert_fingerprint = cert.fingerprint(hashes.SHA256()).hex()
 
+            # In a real implementation, you would check if this fingerprint belongs to the bot_id
+            # For now, we check if it exists in our store
             return cert_fingerprint in self.certificate_store
 
         except Exception as e:
-            logger = logging.getLogger(__name__)
             logger.error(f"Error verifying certificate: {str(e)}")
             return False
 
@@ -109,15 +118,16 @@ class ZeroTrustManager:
 
         stored_fingerprint = self.device_fingerprints.get(bot_id)
         if not stored_fingerprint:
-            # First time seeing this device, store it
+            # First time seeing this device, store it (Trust on First Use - TOFU)
             self.device_fingerprints[bot_id] = fingerprint
             return True
 
         # Compare fingerprint components
-        match_score = sum(
+        match_count = sum(
             1 for k, v in fingerprint.items()
             if stored_fingerprint.get(k) == v
-        ) / len(fingerprint)
+        )
+        match_score = match_count / len(fingerprint) if fingerprint else 0
 
         return match_score >= 0.8
 
@@ -221,16 +231,14 @@ class ZeroTrustManager:
         """Check if command sequence follows normal patterns"""
         if not commands:
             return True
-
-        # Add pattern recognition logic here
+        # Add pattern recognition logic here (e.g., detect loops or dangerous sequences)
         return True
 
     def _is_normal_timing_pattern(self, timestamps: List[float]) -> bool:
         """Check if command timing follows normal patterns"""
         if not timestamps:
             return True
-
-        # Add timing analysis logic here
+        # Add timing analysis logic here (e.g., detect bot flooding)
         return True
 
     def _is_normal_resource_usage(self, metrics: Dict) -> bool:
