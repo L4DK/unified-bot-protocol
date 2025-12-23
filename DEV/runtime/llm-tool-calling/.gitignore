@@ -1,0 +1,6 @@
+# FilePath: "/runtime/llm-tool-calling/.gitignore"
+# Description: Files to ignore in version control
+
+.env
+__pycache__/
+*.pyc
