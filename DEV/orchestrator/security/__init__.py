@@ -1,3 +1,11 @@
+# FilePath: "/DEV/orchestrator/security/__init__.py"
+# Project: Unified Bot Protocol (UBP)
+# Description: Security module initialization. Exposes all security managers and handlers.
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Date Modified: "21/12/2025"
+# Version: "v.1.0.0"
+
 """Security module for UBP"""
 
 from .audit import AuditLogger
