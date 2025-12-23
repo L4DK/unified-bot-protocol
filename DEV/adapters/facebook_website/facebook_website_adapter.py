@@ -1,27 +1,8 @@
 """
-Facebook Website Platform Adapter for Unified Bot Protocol (UBP)
-================================================================
-
-File: facebook_website_adapter.py
+FilePath: "/adapters/facebook_website/facebook_website_adapter.py"
 Project: Unified Bot Protocol (UBP)
-Version: 1.0.0
-Last Edited: 2025-09-19
-Author: Michael Landbo (UBP BDFL)
-License: Apache-2.0
-
-Description:
-Production-grade Facebook Website adapter for UBP.
-Handles Facebook Login status, Social Plugins, and Customer Chat Plugin events.
-Supports inbound webhook event processing, outbound messaging, security,
-observability, and resilience.
-
-Features:
-- Webhook verification and signature validation
-- Async event processing with queueing
-- Secure event signing before sending to UBP Orchestrator
-- Outbound message sending via Facebook Messenger API
-- Structured logging and metrics collection
-- Graceful shutdown and resource cleanup
+Component: Facebook Website Adapter
+Version: 1.1.0 (Refactored for BaseAdapter 1.3.0)
 """
 
 import asyncio
@@ -31,235 +12,250 @@ import hashlib
 import json
 from typing import Dict, Any, Optional
 
-from aiohttp import web, ClientSession, ClientResponseError
+from aiohttp import web, ClientResponseError
 
-from ubp_core.platform_adapter import BasePlatformAdapter, AdapterCapabilities
-from ubp_core.security import SecurityManager
-from ubp_core.observability import StructuredLogger, MetricsCollector
+# Import Base Adapter Classes
+from adapters.base_adapter import (
+    PlatformAdapter,
+    AdapterCapabilities,
+    AdapterMetadata,
+    AdapterContext,
+    PlatformCapability,
+    SendResult,
+    SimpleSendResult,
+    AdapterStatus
+)
 
-
-class FacebookWebsiteAdapter(BasePlatformAdapter):
-    adapter_id = "facebook_website"
-    display_name = "Facebook Website"
-    capabilities = AdapterCapabilities(
-        supports_text=True,
-        supports_media=True,
-        supports_buttons=True,
-        supports_threads=False,
-    )
+class FacebookWebsiteAdapter(PlatformAdapter):
+    """
+    Official UBP Facebook Website Adapter.
+    Handles events from Facebook Login, Social Plugins, and Customer Chat.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.app_id: str = config["app_id"]
-        self.app_secret: str = config["app_secret"]
-        self.page_access_token: str = config["page_access_token"]
-        self.verify_token: Optional[str] = config.get("verify_token")
-        self.logger = StructuredLogger("facebook_website_adapter")
-        self.metrics = MetricsCollector("facebook_website_adapter")
-        self.security = SecurityManager(config.get("security_key", ""))
-        self.http_session = ClientSession()
-        self._webhook_app = web.Application()
-        self._setup_routes()
+
+        # Konfiguration
+        self.fb_config = config.get('facebook_website', config)
+        self.app_id = self.fb_config.get("app_id")
+        self.app_secret = self.fb_config.get("app_secret")
+        self.page_access_token = self.fb_config.get("page_access_token")
+        self.verify_token = self.fb_config.get("verify_token")
+        self.host = self.fb_config.get("host", "0.0.0.0")
+        self.port = self.fb_config.get("port", 8081) # Standard port 8081 for Website events
+
+        if not self.app_secret or not self.page_access_token:
+            self.logger.error("Facebook Website config missing 'app_secret' or 'page_access_token'")
+
+        # Webhook Server State
+        self._app = web.Application()
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
-        self.message_queue: asyncio.Queue = asyncio.Queue()
 
-    def _setup_routes(self):
-        self._webhook_app.router.add_get("/webhook", self._handle_verification)
-        self._webhook_app.router.add_post("/webhook", self._handle_webhook_event)
+    # --- Properties ---
 
-    async def start(self, host: str = "0.0.0.0", port: int = 8081):
-        """Start the webhook HTTP server."""
-        self.logger.info(f"Starting Facebook Website webhook server on {host}:{port}")
-        self._runner = web.AppRunner(self._webhook_app)
+    @property
+    def platform_name(self) -> str:
+        return "facebook_website"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_capabilities={
+                PlatformCapability.SEND_MESSAGE,    # Via Customer Chat Plugin
+                PlatformCapability.WEBHOOK_SUPPORT, # Login status, plugin events
+                PlatformCapability.REAL_TIME_EVENTS
+            },
+            max_message_length=2000,
+            rate_limits={"message.send": 100}
+        )
+
+    @property
+    def metadata(self) -> AdapterMetadata:
+        return AdapterMetadata(
+            platform="facebook_website",
+            display_name="Facebook Website Integration",
+            version="1.1.0",
+            author="Michael Landbo",
+            description="Integration for FB Login, Social Plugins & Customer Chat",
+            supports_webhooks=True,
+            supports_real_time=True
+        )
+
+    # --- Lifecycle ---
+
+    async def _setup_platform(self) -> None:
+        """Sætter webhook routes op og starter serveren"""
+        self._app.router.add_get("/webhook", self._handle_verification)
+        self._app.router.add_post("/webhook", self._handle_webhook_event)
+
+        self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, host, port)
+        self._site = web.TCPSite(self._runner, self.host, self.port)
         await self._site.start()
-        self.logger.info("Facebook Website webhook server started")
 
-        # Start background task to process queued events
-        asyncio.create_task(self._process_message_queue())
+        self.logger.info(f"Facebook Website Webhook listening on {self.host}:{self.port}")
 
-    async def stop(self):
-        """Stop the webhook HTTP server and cleanup."""
-        self.logger.info("Stopping Facebook Website webhook server")
+    async def stop(self) -> None:
+        """Lukker serveren pænt ned"""
         if self._site:
             await self._site.stop()
         if self._runner:
             await self._runner.cleanup()
-        await self.http_session.close()
-        self.logger.info("Facebook Website adapter stopped")
+        await super().stop()
+
+    # --- Core Logic: Send Message ---
+
+    async def send_message(self, context: AdapterContext, message: Dict[str, Any]) -> SendResult:
+        """
+        Sender besked via Facebook Customer Chat (Messenger API).
+        Target er typisk en PSID (Page Scoped ID) fra en bruger der har startet en chat.
+        """
+        try:
+            recipient_id = context.channel_id or context.user_id
+
+            if not recipient_id:
+                return SimpleSendResult(False, error_message="Missing recipient ID (PSID)")
+
+            # Vi bruger samme API endpoint som Messenger, da Customer Chat er en extension af Messenger
+            url = f"https://graph.facebook.com/v16.0/me/messages"
+            params = {"access_token": self.page_access_token}
+
+            payload = {
+                "recipient": {"id": recipient_id},
+                "messaging_type": "RESPONSE",
+                "message": {"text": message.get("content", "")}
+            }
+
+            # Hvis der er attachments
+            if message.get("attachment"):
+                payload["message"]["attachment"] = message["attachment"]
+
+            # Brug base-klassens http_session til outbound calls
+            async with self.http_session.post(url, params=params, json=payload) as resp:
+                resp_data = await resp.json()
+
+                if resp.status != 200:
+                    return SimpleSendResult(
+                        success=False,
+                        error_message=f"FB API Error: {resp_data.get('error', {}).get('message')}",
+                        details=resp_data
+                    )
+
+                return SimpleSendResult(
+                    success=True,
+                    platform_message_id=resp_data.get("message_id"),
+                    details={"recipient_id": resp_data.get("recipient_id")}
+                )
+
+        except Exception as e:
+            self.logger.error(f"FB Website Send Error: {e}")
+            return SimpleSendResult(success=False, error_message=str(e))
+
+    # --- Webhook Handling ---
 
     async def _handle_verification(self, request: web.Request) -> web.Response:
-        """Handle Facebook webhook verification challenge."""
-        params = request.rel_url.query
-        mode = params.get("hub.mode")
-        token = params.get("hub.verify_token")
-        challenge = params.get("hub.challenge")
+        """Håndterer Facebooks 'Verify Token' challenge"""
+        mode = request.query.get("hub.mode")
+        token = request.query.get("hub.verify_token")
+        challenge = request.query.get("hub.challenge")
 
         if mode == "subscribe" and token == self.verify_token:
-            self.logger.info("Webhook verification successful")
             return web.Response(text=challenge)
-        else:
-            self.logger.warning("Webhook verification failed")
-            return web.Response(status=403)
+        return web.Response(status=403)
 
     async def _handle_webhook_event(self, request: web.Request) -> web.Response:
-        """Handle incoming webhook POST events from Facebook Website plugins."""
+        """Modtager events fra Facebook (Login, Plugins)"""
         signature = request.headers.get("X-Hub-Signature")
         body = await request.read()
 
-        if not self._verify_signature(body, signature):
-            self.logger.warning("Invalid webhook signature")
-            self.metrics.increment("facebook_website.webhook.signature_failures")
+        if self.app_secret and not self._verify_signature(body, signature):
+            self.logger.warning("Invalid FB Signature")
             return web.Response(status=403)
 
         try:
-            data = json.loads(body)
+            data = await request.json()
         except json.JSONDecodeError:
-            self.logger.error("Invalid JSON payload received")
-            self.metrics.increment("facebook_website.webhook.invalid_json")
             return web.Response(status=400)
 
-        await self._handle_platform_event(data)
+        # Processer data asynkront
+        await self._process_incoming_data(data)
         return web.Response(status=200)
 
+    async def _process_incoming_data(self, data: Dict[str, Any]):
+        """Konverterer events til UBP format"""
+        # Facebook Website events kan variere meget afhængig af plugin
+        # Her håndterer vi de mest gængse typer (custom implementation)
+
+        event_type = data.get("event_type") # Hvis data kommer fra en custom JS integration
+
+        # Hvis det er en standard webhook entry struktur (ligesom Messenger)
+        if data.get("object") == "page":
+            for entry in data.get("entry", []):
+                for messaging in entry.get("messaging", []):
+                    await self._process_messaging_event(messaging)
+            return
+
+        # Hvis det er Login Status eller Social Plugin events
+        if event_type:
+            context = AdapterContext(
+                tenant_id="default",
+                user_id=data.get("user_id"),
+                channel_id="facebook_website",
+                extras={"plugin": data.get("plugin")}
+            )
+
+            payload = {
+                "type": "event",
+                "content": data,
+                "metadata": {"event_type": event_type, "source": "facebook_website"}
+            }
+
+            if self.connected:
+                await self._send_to_orchestrator({
+                    "type": "platform_event",
+                    "context": context.to_dict(),
+                    "payload": payload
+                })
+
+    async def _process_messaging_event(self, event: Dict):
+        """Håndterer Customer Chat beskeder"""
+        sender_id = event.get("sender", {}).get("id")
+        if "message" in event:
+            context = AdapterContext(
+                tenant_id="default",
+                user_id=sender_id,
+                channel_id=sender_id, # I Customer Chat er kanal = bruger
+                extras={"source": "customer_chat_plugin"}
+            )
+
+            payload = {
+                "type": "text",
+                "content": event["message"].get("text", ""),
+                "metadata": {"mid": event["message"].get("mid")}
+            }
+
+            if self.connected:
+                await self._send_to_orchestrator({
+                    "type": "user_message",
+                    "context": context.to_dict(),
+                    "payload": payload
+                })
+                self.metrics["messages_received"] += 1
+
     def _verify_signature(self, payload: bytes, signature: Optional[str]) -> bool:
-        """Verify X-Hub-Signature header using app secret."""
-        if not signature:
-            return False
+        """Verificer HMAC SHA1 (Facebook bruger SHA1 til nogle webhooks, SHA256 til andre)"""
+        if not signature: return False
         try:
             sha_name, signature_hash = signature.split("=")
         except ValueError:
             return False
+
         if sha_name != "sha1":
             return False
+
         mac = hmac.new(self.app_secret.encode(), msg=payload, digestmod=hashlib.sha1)
         return hmac.compare_digest(mac.hexdigest(), signature_hash)
 
-    async def _handle_platform_event(self, event: Dict[str, Any]):
-        """
-        Handle incoming Facebook Website events from webhooks or SDK callbacks.
-        Converts events into UBP events and queues them.
-        """
-        event_type = event.get("event_type")
-        if event_type == "login_status":
-            ubp_event = {
-                "event_type": "fb_website.login.status",
-                "platform": "facebook_website",
-                "timestamp": event.get("timestamp"),
-                "data": {
-                    "user_id": event.get("user_id"),
-                    "status": event.get("status"),
-                    "auth_response": event.get("auth_response"),
-                    "raw_event": event,
-                },
-                "adapter_id": self.adapter_id,
-            }
-            await self.message_queue.put(ubp_event)
-
-        elif event_type == "social_plugin_interaction":
-            ubp_event = {
-                "event_type": "fb_website.social_plugin.interaction",
-                "platform": "facebook_website",
-                "timestamp": event.get("timestamp"),
-                "data": {
-                    "plugin": event.get("plugin"),
-                    "action": event.get("action"),
-                    "user_id": event.get("user_id"),
-                    "raw_event": event,
-                },
-                "adapter_id": self.adapter_id,
-            }
-            await self.message_queue.put(ubp_event)
-
-        elif event_type == "customer_chat_message":
-            ubp_event = {
-                "event_type": "fb_website.customer_chat.message",
-                "platform": "facebook_website",
-                "timestamp": event.get("timestamp"),
-                "data": {
-                    "sender_id": event.get("sender_id"),
-                    "message": event.get("message"),
-                    "raw_event": event,
-                },
-                "adapter_id": self.adapter_id,
-            }
-            await self.message_queue.put(ubp_event)
-
-        else:
-            self.logger.warning(f"Unknown Facebook Website event type: {event_type}")
-            self.metrics.increment("facebook_website.events.unknown")
-
-    async def _process_message_queue(self):
-        """Background task to send queued UBP events to orchestrator."""
-        while True:
-            event = await self.message_queue.get()
-            try:
-                await self.send_event_to_orchestrator(event)
-                self.metrics.increment("facebook_website.events.sent")
-            except Exception as e:
-                self.logger.error(f"Failed to send event to orchestrator: {e}")
-                self.metrics.increment("facebook_website.events.failed")
-            self.message_queue.task_done()
-
-    async def send_event_to_orchestrator(self, event: Dict[str, Any]):
-        """Send event to UBP Orchestrator with signing and observability."""
-        if not hasattr(self, "orchestrator_ws") or self.orchestrator_ws is None:
-            self.logger.warning("No orchestrator connection available, dropping event")
-            self.metrics.increment("facebook_website.events.dropped")
-            return
-
-        event_json = json.dumps(event)
-        signature = self.security.sign_message(event_json)
-
-        payload = {
-            "message": event,
-            "signature": signature,
-        }
-
-        await self.orchestrator_ws.send(json.dumps(payload))
-        self.logger.info(f"Sent event to orchestrator: {event['event_type']}")
-
-    async def handle_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Handle UBP commands for Facebook Website platform.
-        Currently supports sending messages via Customer Chat Plugin.
-
-        Note: Actual sending requires integration with Facebook Messenger API.
-        """
-        try:
-            command_name = command["command_name"]
-            params = command["parameters"]
-
-            if command_name == "fb_website.customer_chat.send":
-                recipient_id = params.get("recipient_id")
-                message_payload = params.get("message")
-
-                if not recipient_id or not message_payload:
-                    raise ValueError("Missing recipient_id or message payload")
-
-                url = f"https://graph.facebook.com/v15.0/me/messages?access_token={self.page_access_token}"
-                payload = {
-                    "recipient": {"id": recipient_id},
-                    "message": message_payload,
-                }
-
-                async with self.http_session.post(url, json=payload) as resp:
-                    resp.raise_for_status()
-                    resp_json = await resp.json()
-                    self.metrics.increment("facebook_website.messages.sent")
-                    self.logger.info(f"Sent customer chat message to {recipient_id}")
-                    return {"status": "SUCCESS", "result": resp_json}
-
-            else:
-                raise ValueError(f"Unknown command: {command_name}")
-
-        except Exception as e:
-            self.logger.exception("Facebook Website command failed")
-            self.metrics.increment("facebook_website.commands.failed")
-            return {"status": "ERROR", "error_details": str(e)}
-
-    async def close(self):
-        """Cleanup resources."""
-        await self.http_session.close()
+    async def handle_platform_event(self, event): pass
+    async def handle_command(self, command): return {}
