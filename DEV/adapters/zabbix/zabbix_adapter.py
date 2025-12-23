@@ -321,7 +321,7 @@ class ZabbixAdapter(PlatformAdapter):
 
         except Exception as e:
             self.logger.error(f"Webhook Error: {e}")
-            return web.Response(status=500, text=str(e))
+            return web.Response(status=500, text="Internal server error")
 
     async def handle_platform_event(self, event): pass
     async def handle_command(self, command): return {}
