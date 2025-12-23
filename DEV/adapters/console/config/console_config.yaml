@@ -1,0 +1,7 @@
+# File: console_config.yaml
+
+console:
+  username: "L4DK"
+
+# Debugging
+debug: true
