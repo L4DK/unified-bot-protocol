@@ -1,18 +1,37 @@
-# integrations/llm/base.py
+# FilePath: "/DEV/integrations/llm/base.py"
+# Projekt: Unified Bot Protocol (UBP)
+# Beskrivelse: Abstrakt base-klasse for LLM integrationer. Definerer fælles interface for tekst, billeder og lyd.
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Version: "v.1.0.0"
+
 from typing import Dict, List, Any, Optional, Union
-from ..core.universal_connector import (
-    BaseIntegration,
-    IntegrationMetadata,
-    IntegrationType,
-    ProtocolType,
-    SecurityLevel,
-    IntegrationCapability
-)
 from abc import abstractmethod
 from enum import Enum
 import json
 import asyncio
 from datetime import datetime
+
+# Relative import fra core modulet
+try:
+    from ..core.universal_connector import (
+        BaseIntegration,
+        IntegrationMetadata,
+        IntegrationType,
+        ProtocolType,
+        SecurityLevel,
+        IntegrationCapability
+    )
+except ImportError:
+    # Fallback for direkte test kørsel
+    from integrations.core.universal_connector import (
+        BaseIntegration,
+        IntegrationMetadata,
+        IntegrationType,
+        ProtocolType,
+        SecurityLevel,
+        IntegrationCapability
+    )
 
 class LLMCapability(Enum):
     TEXT_GENERATION = "text.generate"
@@ -59,7 +78,7 @@ class BaseLLMIntegration(BaseIntegration):
         pass
 
     @abstractmethod
-    async def Image Generation(
+    async def generate_image(
         self,
         prompt: str,
         parameters: Dict[str, Any] = None
@@ -96,7 +115,7 @@ class BaseLLMIntegration(BaseIntegration):
         pass
 
     @abstractmethod
-    async def Video Generation(
+    async def generate_video(
         self,
         prompt: str,
         parameters: Dict[str, Any] = None
@@ -158,7 +177,5 @@ class BaseLLMIntegration(BaseIntegration):
         conversation_id: str
     ) -> List[Dict[str, Any]]:
         """Get conversation history"""
-        return self.active_conversations.get(
-            conversation_id,
-            {"messages": []}
-        )["messages"]
+        history = self.active_conversations.get(conversation_id)
+        return history["messages"] if history else []
