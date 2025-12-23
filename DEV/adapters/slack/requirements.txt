@@ -1,4 +1,4 @@
 slack_sdk
 aiohttp
-pytest>
+pytest
 pytest-asyncio
