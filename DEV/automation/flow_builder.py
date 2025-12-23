@@ -1,4 +1,10 @@
-# automation/flow_builder.py
+# FilePath: "/DEV/automation/flow_builder.py"
+# Projekt: Unified Bot Protocol (UBP)
+# Beskrivelse: Logik til visuel opbygning, validering og eksport af automation flows.
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Version: "v.1.0.0"
+
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 from enum import Enum
