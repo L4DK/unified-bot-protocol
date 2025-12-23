@@ -1,30 +1,12 @@
-# filepath: requirements-bot.txt
-# project: Unified Bot Protocol (UBP) - Reference Implementation
-# component: Bot Agent (reference worker, secure handshake/heartbeat)
-# author: Michael Landbo (Founder & BDFL of UBP)
-#
-# license: Apache-2.0
-# version: 1.0.0
-# last-edit: 2025-09-19
-#
-# notes:
-# - Bot exposes a tiny FastAPI for health/metrics and uses websockets for C2.
-# - Keep the footprint minimal for edge deployments.
+# FilePath: "/DEV/bot_agent/requirements-bot.txt"
+# Project: Unified Bot Protocol (UBP)
+# Component: Bot Agent
+# Description: Dependencies for a Python-based UBP Agent.
 
-# Health/metrics + utility HTTP calls
-fastapi
-httpx
-
-# C2 Channel
 websockets
-
-# Models / Config
+fastapi
+uvicorn[standard]
 pydantic
-
-# Security
-PyJWT
-cryptography
-
-# Observability
+pydantic-settings
 prometheus-client
-structlog
+aiohttp
