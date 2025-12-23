@@ -1,0 +1,8 @@
+# FilePath: "/DEV/automation/requirements-automation.txt"
+# Projekt: Unified Bot Protocol (UBP)
+# Modul: Automation Engine
+# Beskrivelse: Afhængigheder til flow engine og regel-håndtering.
+
+aiohttp
+pytz
+pydantic
