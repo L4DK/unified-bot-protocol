@@ -1,127 +1,263 @@
-#
 """
-Whatsapp Platform Adapter for Unified Bot Protocol (UBP)
-=======================================================
-
-FILEPATH: adapters/whatsapp/adapter.py
+FilePath: "/adapters/whatsapp/whatsapp_adapter.py"
 Project: Unified Bot Protocol (UBP)
-Version: 1.0.1
-Created: 2025-09-17
-Last Edit: 2025-09-19
-Author: Michael Landbo
-
-Description:
-Complete Whatsapp Platform Adapter implementation providing bidirectional
-communication between Whatsapp and the UBP Orchestrator. Handles all Whatsapp
-events, message types, interactions, and maintains full UBP compliance.
-
-Features:
-- Full Whatsapp API integration with aiohttp
-
-
-TODO:
-
+Component: WhatsApp Business Adapter
+Version: 1.1.0 (Refactored for BaseAdapter 1.3.0)
 """
-from ..base import PlatformAdapter, AdapterMetadata
-import aiohttp
+
+import asyncio
+import hmac
+import hashlib
+import logging
+import json
+from typing import Dict, Any, Optional
+
+from aiohttp import web
+
+# Import Base Adapter Classes
+from adapters.base_adapter import (
+    PlatformAdapter,
+    AdapterCapabilities,
+    AdapterMetadata,
+    AdapterContext,
+    PlatformCapability,
+    SendResult,
+    SimpleSendResult,
+    AdapterStatus
+)
 
 class WhatsAppAdapter(PlatformAdapter):
+    """
+    Official UBP WhatsApp Adapter.
+    Integrates with Meta's WhatsApp Cloud API.
+    """
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.api_url = f"https://graph.facebook.com/v12.0/{config['phone_number_id']}"
-        self.access_token = config["access_token"]
+
+        # Config
+        self.wa_config = config.get('whatsapp', config)
+
+        self.access_token = self.wa_config.get("access_token")
+        self.phone_number_id = self.wa_config.get("phone_number_id")
+        self.verify_token = self.wa_config.get("verify_token")
+        self.app_secret = self.wa_config.get("app_secret")
+
+        self.host = self.wa_config.get("host", "0.0.0.0")
+        self.port = self.wa_config.get("port", 8082) # Standard port for WA
+
+        self.api_version = "v17.0"
+        self.api_url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
+
+        if not self.access_token or not self.phone_number_id:
+            self.logger.error("WhatsApp config missing 'access_token' or 'phone_number_id'")
+
+        # Webhook Server
+        self._app = web.Application()
+        self._runner: Optional[web.AppRunner] = None
+        self._site: Optional[web.TCPSite] = None
+
+    # --- Properties ---
 
     @property
     def platform_name(self) -> str:
         return "whatsapp"
 
     @property
-    def capabilities(self) -> List[str]:
-        return [
-            "whatsapp.message.send",
-            "whatsapp.message.template",
-            "whatsapp.media.send",
-            "whatsapp.location.send"
-        ]
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities(
+            supported_capabilities={
+                PlatformCapability.SEND_MESSAGE,
+                PlatformCapability.SEND_IMAGE,
+                PlatformCapability.SEND_DOCUMENT,
+                PlatformCapability.SEND_AUDIO,
+                PlatformCapability.SEND_VIDEO,
+                PlatformCapability.SEND_BUTTONS, # Templates with buttons
+                PlatformCapability.WEBHOOK_SUPPORT
+            },
+            max_message_length=4096,
+            supported_media_types=["image/jpeg", "image/png", "application/pdf", "video/mp4"],
+            rate_limits={"message.send": 80} # Cloud API limits varierer efter tier
+        )
 
     @property
     def metadata(self) -> AdapterMetadata:
         return AdapterMetadata(
             platform="whatsapp",
-            version="1.0.0",
-            features=["templates", "media", "location", "interactive_buttons"],
-            max_message_length=4096,
-            supported_media_types=["image", "video", "audio", "document"],
-            rate_limits={"messages_per_day": 1000}
+            display_name="WhatsApp Business",
+            version="1.1.0",
+            author="Michael Landbo",
+            description="Meta WhatsApp Cloud API Integration",
+            supports_webhooks=True,
+            supports_real_time=True
         )
 
-    async def _setup_platform(self):
-        """Setup WhatsApp webhook"""
-        # Webhook setup would be handled by your web framework
-        pass
+    # --- Lifecycle ---
 
-    async def handle_platform_event(self, event: Dict):
-        """Handle WhatsApp webhook events"""
-        if "messages" in event:
-            message = event["messages"][0]
-            ubp_event = {
-                "event_type": "whatsapp.message.received",
-                "platform": "whatsapp",
-                "timestamp": message["timestamp"],
-                "data": {
-                    "from": message["from"],
-                    "type": message["type"],
-                    "text": message.get("text", {}).get("body", ""),
-                    "raw_message": message
-                }
-            }
-            await self.message_queue.put({"event": ubp_event})
+    async def _setup_platform(self) -> None:
+        """Starter webhook serveren"""
+        self._app.router.add_get("/webhook", self._handle_verification)
+        self._app.router.add_post("/webhook", self._handle_webhook_event)
 
-    async def handle_command(self, command: Dict):
-        """Handle UBP commands for WhatsApp"""
+        self._runner = web.AppRunner(self._app)
+        await self._runner.setup()
+        self._site = web.TCPSite(self._runner, self.host, self.port)
+        await self._site.start()
+
+        self.logger.info(f"WhatsApp Webhook listening on {self.host}:{self.port}")
+
+    async def stop(self) -> None:
+        if self._site:
+            await self._site.stop()
+        if self._runner:
+            await self._runner.cleanup()
+        await super().stop()
+
+    # --- Core Logic: Send Message ---
+
+    async def send_message(self, context: AdapterContext, message: Dict[str, Any]) -> SendResult:
+        """Sender besked til WhatsApp nummer"""
         try:
-            command_name = command["command_name"]
-            params = command["parameters"]
+            recipient_id = context.channel_id or context.user_id
+            if not recipient_id:
+                return SimpleSendResult(False, error_message="Missing recipient phone number")
 
             headers = {
                 "Authorization": f"Bearer {self.access_token}",
                 "Content-Type": "application/json"
             }
 
-            if command_name == "whatsapp.message.send":
-                payload = {
-                    "messaging_product": "whatsapp",
-                    "to": params["to"],
-                    "type": "text",
-                    "text": {"body": params["text"]}
-                }
-            elif command_name == "whatsapp.message.template":
-                payload = {
-                    "messaging_product": "whatsapp",
-                    "to": params["to"],
-                    "type": "template",
-                    "template": params["template"]
-                }
-            else:
-                raise ValueError(f"Unknown command: {command_name}")
+            # Standard Text Message
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": recipient_id,
+                "type": "text",
+                "text": {"body": message.get("content", "")}
+            }
 
-            async with self.http_session.post(
-                f"{self.api_url}/messages",
-                headers=headers,
-                json=payload
-            ) as response:
-                result = await response.json()
+            # Hvis template besked (krævet for at starte samtaler udenfor 24h vindue)
+            if message.get("template"):
+                payload["type"] = "template"
+                payload.pop("text")
+                payload["template"] = message["template"] # {name: "hello_world", language: {code: "en_US"}}
 
-                if response.status != 200:
-                    raise Exception(f"WhatsApp API error: {result}")
+            # Media support
+            elif message.get("image_url"):
+                payload["type"] = "image"
+                payload.pop("text")
+                payload["image"] = {"link": message["image_url"]}
 
-                return {
-                    "status": "SUCCESS",
-                    "result": result
-                }
+            # Send Request
+            async with self.http_session.post(self.api_url, headers=headers, json=payload) as resp:
+                resp_data = await resp.json()
+
+                if resp.status >= 400:
+                    return SimpleSendResult(
+                        success=False,
+                        error_message=f"WhatsApp API Error: {resp_data.get('error', {}).get('message')}",
+                        details=resp_data
+                    )
+
+                return SimpleSendResult(
+                    success=True,
+                    platform_message_id=resp_data.get("messages", [{}])[0].get("id"),
+                    details={"wa_id": resp_data.get("contacts", [{}])[0].get("wa_id")}
+                )
 
         except Exception as e:
-            return {
-                "status": "ERROR",
-                "error_details": str(e)
-            }
+            self.logger.error(f"WhatsApp Send Error: {e}")
+            return SimpleSendResult(success=False, error_message=str(e))
+
+    # --- Webhook Handling ---
+
+    async def _handle_verification(self, request: web.Request) -> web.Response:
+        """Verify Token Check"""
+        mode = request.query.get("hub.mode")
+        token = request.query.get("hub.verify_token")
+        challenge = request.query.get("hub.challenge")
+
+        if mode == "subscribe" and token == self.verify_token:
+            return web.Response(text=challenge)
+        return web.Response(status=403)
+
+    async def _handle_webhook_event(self, request: web.Request) -> web.Response:
+        """Modtager beskeder"""
+        # Signatur verificering (valgfri men anbefalet)
+        signature = request.headers.get("X-Hub-Signature-256")
+        body_bytes = await request.read()
+
+        if self.app_secret and not self._verify_signature(body_bytes, signature):
+            self.logger.warning("Invalid WhatsApp Signature")
+            return web.Response(status=403)
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.Response(status=400)
+
+        # Parse Event
+        for entry in data.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+
+                # Check for messages
+                if "messages" in value:
+                    for msg in value["messages"]:
+                        await self._process_incoming_message(value, msg)
+
+                # Check for statuses (delivered, read)
+                if "statuses" in value:
+                    # Implementer status tracking her hvis ønsket
+                    pass
+
+        return web.Response(text="EVENT_RECEIVED")
+
+    async def _process_incoming_message(self, value_data: Dict, message_data: Dict):
+        """Konverterer WA besked til UBP"""
+
+        sender_id = message_data.get("from") # Telefonnummer
+        name = value_data.get("contacts", [{}])[0].get("profile", {}).get("name")
+
+        context = AdapterContext(
+            tenant_id="default",
+            user_id=sender_id,
+            channel_id=sender_id,
+            extras={"name": name, "wa_id": message_data.get("id")}
+        )
+
+        msg_type = message_data.get("type")
+        content = ""
+
+        if msg_type == "text":
+            content = message_data.get("text", {}).get("body", "")
+        elif msg_type == "button":
+            content = message_data.get("button", {}).get("text", "")
+        else:
+            content = f"[{msg_type} message]"
+
+        payload = {
+            "type": "text",
+            "content": content,
+            "metadata": {"source": "whatsapp", "type": msg_type}
+        }
+
+        if self.connected:
+            await self._send_to_orchestrator({
+                "type": "user_message",
+                "context": context.to_dict(),
+                "payload": payload
+            })
+            self.metrics["messages_received"] += 1
+
+    def _verify_signature(self, payload: bytes, signature: str) -> bool:
+        if not signature: return False
+        expected = "sha256=" + hmac.new(
+            key=self.app_secret.encode(),
+            msg=payload,
+            digestmod=hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
+    async def handle_platform_event(self, event): pass
+    async def handle_command(self, command): return {}
