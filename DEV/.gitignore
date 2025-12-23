@@ -1,0 +1,10 @@
+# File: .gitignore
+# Project: Unified Bot Protocol (UBP)
+# Description: Git ignore file for the UBP repository
+# Author: Michael Landbo (Founder & BDFL of UBP)
+# Date: 2025-12-23
+
+.env
+__pycache__/
+*.pyc
+logs/
