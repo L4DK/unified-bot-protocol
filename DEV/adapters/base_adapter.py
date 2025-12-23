@@ -14,13 +14,6 @@
 # VERSION: 1.3.1
 # CREATED: 2025-09-16
 # LAST EDIT: 2025-09-19
-#
-# CHANGELOG:
-# - 1.3.0: Complete merger of robust connection handling, metrics, queue processing
-#          with enhanced capability system and adapter registry
-# - 1.2.0: Added comprehensive error handling and reconnection logic
-# - 1.1.0: Added capability descriptors and adapter metadata
-# - 1.0.0: Initial base adapter interface and registry
 
 from __future__ import annotations
 from abc import ABC, abstractmethod

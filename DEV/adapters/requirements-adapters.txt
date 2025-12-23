@@ -1,5 +1,8 @@
 aiohttp
 aiofiles
+aiomqtt
+aioredis
+aiohttp
 aiosmtplib
 httpx
 pydantic
