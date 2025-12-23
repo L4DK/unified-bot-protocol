@@ -1,37 +1,18 @@
-# filepath: bot/agent.py
-# project: Unified Bot Protocol (UBP)
-# component: Bot Agent (Reference Implementation)
-# license: Apache-2.0
-# author: Michael Landbo (Founder & BDFL of UBP)
-# description:
-#   Reference Bot Agent for UBP. Implements:
-#     - Secure Orchestrator WebSocket connection with handshake
-#     - One-time token onboarding -> long-lived API key persistence
-#     - Heartbeats, command handling, reconnection logic
-#     - Structured logging with trace context
-#     - Prometheus metrics + FastAPI health endpoints
-#     - Capability advertisement and runtime metadata exchange
-# version: 1.4.0
-# last_edit: 2025-09-16
-#
-# CHANGELOG:
-# - 1.4.0: Merge credential persistence (initial_token -> api_key) with full lifecycle:
-#           websockets, heartbeat, metrics, structured logging, reconnection, health.
-# - 1.3.0: Added exponential backoff for reconnection; improved error reporting.
-# - 1.2.0: Added Prometheus metrics and FastAPI health/metrics endpoints.
-# - 1.1.0: Added capabilities, metadata, and trace context to handshake & logs.
-# - 1.0.0: Initial Agent with connect/handshake/heartbeat/command handling.
+# FilePath: "/DEV/bot_agent/agent.py"
+# Project: Unified Bot Protocol (UBP)
+# Description: Reference Bot Agent. Handles Onboarding, C2 connection, Heartbeats, and Commands.
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Version: "v.2.0.0" (Updated for Split URL Architecture)
 
 import asyncio
 import json
 import logging
-import os
 import sys
 import uuid
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Optional, Set
+import os
+from contextlib import asynccontextmanager
+from typing import Dict, Optional
 
 import websockets
 from fastapi import FastAPI
@@ -39,478 +20,252 @@ from prometheus_client import Counter, Gauge, generate_latest
 from starlette.responses import Response
 from websockets.client import WebSocketClientProtocol
 
+# Import Settings
+try:
+    from .settings import get_settings
+except ImportError:
+    from settings import get_settings
+
 # =========================
-# Configuration & Constants
+# Setup & Logging
 # =========================
-
-DEFAULT_HEARTBEAT_SEC = 30
-DEFAULT_RECONNECT_BASE_DELAY_SEC = 2
-DEFAULT_RECONNECT_MAX_DELAY_SEC = 30
-DEFAULT_AGENT_VERSION = "1.4.0"
-
-# Prometheus metrics
-CONNECTED = Gauge('ubp_bot_agent_connected', 'Connection status to orchestrator (1=connected,0=disconnected)')
-COMMANDS_RECEIVED = Counter('ubp_bot_agent_commands_total', 'Total commands received', ['command_name'])
-COMMAND_DURATION = Gauge('ubp_bot_agent_command_duration_seconds', 'Time taken to execute last command (s)')
-HANDSHAKE_FAILURES = Counter('ubp_bot_agent_handshake_failures_total', 'Handshake failures')
-SENT_HEARTBEATS = Counter('ubp_bot_agent_heartbeats_total', 'Total heartbeats sent')
-RECONNECT_ATTEMPTS = Counter('ubp_bot_agent_reconnect_attempts_total', 'Total reconnect attempts')
-
-# =================
-# Structured Logging
-# =================
+settings = get_settings()
 
 class JsonFormatter(logging.Formatter):
+    """Formats logs as JSON for better machine reading (Splunk/ELK)."""
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": record.created,
             "level": record.levelname,
-            "service": "ubp_bot_agent",
+            "service": "ubp_bot",
+            "bot_id": settings.BOT_ID,
             "message": record.getMessage(),
         }
-        # Enrich with custom attributes when available
-        for attr in ("bot_id", "instance_id", "trace_id", "session_id"):
-            value = getattr(record, attr, None)
-            if value:
-                payload[attr] = value
-        return json.dumps(payload, ensure_ascii=False)
+        if hasattr(record, "trace_id"):
+            payload["trace_id"] = record.trace_id
+        return json.dumps(payload)
 
-def _configure_logging() -> logging.LoggerAdapter:
-    logger = logging.getLogger("ubp_bot_agent")
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler(stream=sys.stdout)
-    handler.setFormatter(JsonFormatter())
-    if not logger.handlers:
-        logger.addHandler(handler)
-    # Default context; will be overridden per instance
-    return logging.LoggerAdapter(logger, {"trace_id": "boot"})
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("UBP.Bot")
+# For production: logger.handlers[0].setFormatter(JsonFormatter())
 
-base_log = _configure_logging()
+# =========================
+# Metrics
+# =========================
+CONNECTED_GAUGE = Gauge('ubp_connected', 'Is bot connected to orchestrator')
+COMMANDS_COUNTER = Counter('ubp_commands_total', 'Total commands received', ['command'])
+HEARTBEAT_COUNTER = Counter('ubp_heartbeats_total', 'Total heartbeats sent')
 
-# ===========
-# Data Models
-# ===========
-
-@dataclass
-class AgentConfig:
-    bot_id: str
-    orchestrator_url: str
-    capabilities: Set[str]
-    config_dir: Path
-    initial_token: Optional[str] = None  # one-time token for first connection
-    api_key_file_suffix: str = "_credentials.json"
-    agent_version: str = DEFAULT_AGENT_VERSION
-
-    @property
-    def credentials_file(self) -> Path:
-        return self.config_dir / f"{self.bot_id}{self.api_key_file_suffix}"
-
-
-# ==========
-# Bot Agent
-# ==========
-
+# =========================
+# Bot Logic
+# =========================
 class BotAgent:
-    """
-    UBP Bot Agent reference implementation.
+    def __init__(self):
+        self.settings = settings
+        self.instance_id = f"{settings.BOT_ID}-{str(uuid.uuid4())[:8]}"
+        self.api_key: Optional[str] = self._load_credentials()
 
-    Design Philosophy:
-    - Interoperability: strictly uses UBP handshake fields and message shapes
-    - Scalability: lightweight, async, decoupled metrics and health endpoints
-    - Security: one-time token onboarding -> long-lived API key persisted locally
-    - Observability: structured logging, metrics, health, trace context
-    """
-
-    def __init__(self, config: AgentConfig):
-        self.config = config
-        self.bot_id = config.bot_id
-        self.instance_id = f"{self.bot_id}-{str(uuid.uuid4())[:8]}"
-        self.orchestrator_url = config.orchestrator_url
-        self.capabilities = config.capabilities
-        self.config_dir = config.config_dir
-
-        # Credentials
-        self.api_key: str = self._load_credentials()
-        if not self.api_key and config.initial_token:
-            # Use one-time token for first handshake
-            self.api_key = ""  # explicit empty; initial token is sent separately
-            self._initial_token = config.initial_token
-        else:
-            self._initial_token = None
-
-        # Connection state
         self.websocket: Optional[WebSocketClientProtocol] = None
-        self.heartbeat_interval = DEFAULT_HEARTBEAT_SEC
         self.connected = False
-        self.session_id: Optional[str] = None
+        self.heartbeat_interval = 30
         self._stop_event = asyncio.Event()
 
-        # Logger with context
-        self.log = logging.LoggerAdapter(
-            logging.getLogger("ubp_bot_agent"),
-            {
-                "bot_id": self.bot_id,
-                "instance_id": self.instance_id,
-                "trace_id": "boot",
-            },
-        )
-
-    # ---------------
-    # Credential I/O
-    # ---------------
-
-    def _load_credentials(self) -> str:
-        """Load long-lived API key from credential file, if present."""
+    def _load_credentials(self) -> Optional[str]:
+        """Loads API Key from disk if it exists."""
         try:
-            if self.config.credentials_file.exists():
-                with open(self.config.credentials_file, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                    return payload.get("api_key", "")
+            if self.settings.credentials_file.exists():
+                with open(self.settings.credentials_file, "r") as f:
+                    data = json.load(f)
+                    return data.get("api_key")
         except Exception as e:
-            self.log.warning(f"Failed to load credentials: {e}")
-        return ""
+            logger.warning(f"Could not load credentials: {e}")
+        return None
 
-    def _save_credentials(self, api_key: str) -> None:
-        """Persist long-lived API key to credential file."""
+    def _save_credentials(self, api_key: str):
+        """Saves API Key securely to disk."""
         try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            with open(self.config.credentials_file, "w", encoding="utf-8") as f:
+            self.settings.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(self.settings.credentials_file, "w") as f:
                 json.dump({"api_key": api_key}, f)
-            self.log.info("API key persisted to credentials file")
+            logger.info("Credentials saved successfully.")
         except Exception as e:
-            self.log.error(f"Failed to save credentials: {e}")
+            logger.error(f"Failed to save credentials: {e}")
 
-    # -----------------------
-    # Lifecycle & Connection
-    # -----------------------
+    async def start(self):
+        """Main loop: Controls connection logic."""
+        logger.info(f"Starting Bot Agent: {self.settings.BOT_ID}")
 
-    async def run(self) -> None:
-        """Run the agent until stop() is called."""
-        await self.connect_loop()
-
-    async def stop(self) -> None:
-        """Signal the agent to stop and close the connection."""
-        self._stop_event.set()
-        try:
-            if self.websocket:
-                await self.websocket.close()
-        except Exception:
-            pass
-
-    async def connect_loop(self) -> None:
-        """Establish connection with exponential backoff on failures."""
-        delay = DEFAULT_RECONNECT_BASE_DELAY_SEC
         while not self._stop_event.is_set():
-            try:
-                RECONNECT_ATTEMPTS.inc()
-                self.log.info("Connecting to orchestrator...", extra={"trace_id": str(uuid.uuid4())})
-                async with websockets.connect(self.orchestrator_url) as ws:
-                    self.websocket = ws
-                    await self._handle_connection()
-                    # If connection returns normally, reset backoff
-                    delay = DEFAULT_RECONNECT_BASE_DELAY_SEC
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.log.error(f"Connection error: {e}")
-                self.connected = False
-                CONNECTED.set(0)
-                await asyncio.sleep(delay)
-                delay = min(DEFAULT_RECONNECT_MAX_DELAY_SEC, delay * 2)
+            if not self.api_key:
+                # No key? Start Onboarding flow
+                success = await self._perform_onboarding()
+                if not success:
+                    logger.error("Onboarding failed. Retrying in 10s...")
+                    await asyncio.sleep(10)
+                    continue
 
-    async def _handle_connection(self) -> None:
-        """Handle handshake, heartbeats, and message loop."""
+            # Have key? Start C2 flow
+            await self._connect_c2()
+
+            if not self._stop_event.is_set():
+                logger.info("Connection lost. Reconnecting in 5s...")
+                await asyncio.sleep(5)
+
+    async def _perform_onboarding(self) -> bool:
+        """Connects to /ws/onboarding to exchange Initial Token for API Key."""
+        url = f"{self.settings.ORCHESTRATOR_URL}/ws/onboarding"
+        logger.info(f"Initiating onboarding at {url}")
+
         try:
-            await self._perform_handshake()
-            self.connected = True
-            CONNECTED.set(1)
+            async with websockets.connect(url) as ws:
+                # Send Handshake with Initial Token
+                payload = {
+                    "bot_id": self.settings.BOT_ID,
+                    "auth_token": self.settings.INITIAL_TOKEN,
+                    "metadata": {"version": self.settings.AGENT_VERSION}
+                }
+                await ws.send(json.dumps(payload))
 
-            # Heartbeat task
-            heartbeat_task = asyncio.create_task(self._send_heartbeats())
+                # Await response
+                response = json.loads(await ws.recv())
 
-            # Message loop
-            while not self._stop_event.is_set():
-                raw = await self.websocket.recv()
-                asyncio.create_task(self._handle_message(raw))
-        except websockets.exceptions.ConnectionClosed as e:
-            self.log.warning(f"Connection closed by orchestrator: {e}")
-            self.connected = False
-            CONNECTED.set(0)
+                if response.get("status") == "SUCCESS":
+                    new_key = response.get("api_key")
+                    if new_key:
+                        self.api_key = new_key
+                        self._save_credentials(new_key)
+                        logger.info("Onboarding successful! API Key obtained.")
+                        return True
+
+                logger.error(f"Onboarding failed: {response}")
+                return False
+
         except Exception as e:
-            self.log.error(f"Connection handler error: {e}")
-            self.connected = False
-            CONNECTED.set(0)
+            logger.error(f"Onboarding connection error: {e}")
+            return False
 
-    # ----------
-    # Handshake
-    # ----------
+    async def _connect_c2(self) -> None:
+        """Connects to /ws/c2 for operations."""
+        url = f"{self.settings.ORCHESTRATOR_URL}/ws/c2"
+        logger.info(f"Connecting to C2 at {url}")
 
-    async def _perform_handshake(self) -> None:
-        """
-        Perform UBP handshake. If first-time onboarding, present initial_token.
-        Otherwise, present long-lived api_key.
-        """
-        auth_block: Dict[str, str]
-        if self.api_key:
-            auth_block = {"api_key": self.api_key}
-        elif self._initial_token:
-            auth_block = {"initial_token": self._initial_token}
-        else:
-            HANDSHAKE_FAILURES.inc()
-            raise RuntimeError("No credentials available (api_key or initial_token)")
+        try:
+            async with websockets.connect(url) as ws:
+                self.websocket = ws
+                self.connected = True
+                CONNECTED_GAUGE.set(1)
 
-        handshake_request = {
-            "handshake": {
-                "bot_id": self.bot_id,
-                "instance_id": self.instance_id,
-                "auth": auth_block,
-                "capabilities": sorted(list(self.capabilities)),
-                "metadata": {
-                    "agent_version": self.config.agent_version,
-                    "platform": "python",
-                    "start_time": datetime.utcnow().isoformat() + "Z",
-                },
-            }
-        }
-
-        await self.websocket.send(json.dumps(handshake_request))
-        raw = await self.websocket.recv()
-        resp = json.loads(raw)
-
-        # Expect schema: {"handshake_response": {...}}
-        hresp = resp.get("handshake_response") or resp  # tolerate older shape
-        status = hresp.get("status")
-        if status != "SUCCESS":
-            HANDSHAKE_FAILURES.inc()
-            raise RuntimeError(f"Handshake failed: {hresp.get('error_message')}")
-
-        # Extract session and heartbeat
-        self.session_id = hresp.get("session_id")
-        if self.session_id:
-            # enrich logger default context
-            self.log = logging.LoggerAdapter(
-                logging.getLogger("ubp_bot_agent"),
-                {
-                    "bot_id": self.bot_id,
-                    "instance_id": self.instance_id,
-                    "trace_id": self.session_id,
-                    "session_id": self.session_id,
-                },
-            )
-        self.heartbeat_interval = int(hresp.get("heartbeat_interval_sec", DEFAULT_HEARTBEAT_SEC))
-
-        # If server returned a new long-lived api_key during onboarding, persist it
-        new_api_key = hresp.get("api_key")
-        if new_api_key:
-            self.api_key = new_api_key
-            self._save_credentials(self.api_key)
-            # Once persisted, initial token is no longer needed
-            self._initial_token = None
-
-        self.log.info("Handshake successful")
-
-    # -----------
-    # Heartbeats
-    # -----------
-
-    async def _send_heartbeats(self) -> None:
-        """Periodically send heartbeats with lightweight metrics."""
-        while self.connected and not self._stop_event.is_set():
-            try:
-                heartbeat = {
-                    "heartbeat": {
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                        "metrics": {
-                            # TODO: integrate psutil for real CPU/Mem if allowed
-                            "cpu_usage": "0.5",
-                            "memory_usage": "100MB",
-                        },
+                # 1. Send Handshake with API Key
+                handshake = {
+                    "handshake": {
+                        "bot_id": self.settings.BOT_ID,
+                        "instance_id": self.instance_id,
+                        "auth": {"api_key": self.api_key},
+                        "capabilities": list(self.settings.CAPABILITIES)
                     }
                 }
-                await self.websocket.send(json.dumps(heartbeat))
-                SENT_HEARTBEATS.inc()
+                await ws.send(json.dumps(handshake))
+
+                # 2. Wait for Auth Success
+                resp = json.loads(await ws.recv())
+                if resp.get("handshake_response", {}).get("status") != "SUCCESS":
+                    logger.error(f"C2 Handshake failed: {resp}")
+                    return
+
+                logger.info("C2 Connected & Authenticated.")
+
+                # 3. Start Heartbeat Task
+                hb_task = asyncio.create_task(self._heartbeat_loop())
+
+                # 4. Message Loop
+                async for message in ws:
+                    await self._handle_message(message)
+
+                # Cleanup
+                hb_task.cancel()
+
+        except Exception as e:
+            logger.error(f"C2 Connection error: {e}")
+        finally:
+            self.connected = False
+            CONNECTED_GAUGE.set(0)
+
+    async def _heartbeat_loop(self):
+        """Sends periodic heartbeats."""
+        try:
+            while self.connected:
                 await asyncio.sleep(self.heartbeat_interval)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.log.error(f"Failed to send heartbeat: {e}")
-                break
+                if self.websocket:
+                    hb = {
+                        "heartbeat": {
+                            "timestamp": str(asyncio.get_event_loop().time()),
+                            "metrics": {"uptime": "ok"}
+                        }
+                    }
+                    await self.websocket.send(json.dumps(hb))
+                    HEARTBEAT_COUNTER.inc()
+        except asyncio.CancelledError:
+            pass
 
-    # ---------------
-    # Message Routing
-    # ---------------
-
-    async def _handle_message(self, message: str) -> None:
-        """Route incoming messages from Orchestrator."""
+    async def _handle_message(self, raw_msg: str):
+        """Handles incoming messages (Commands)."""
         try:
-            msg = json.loads(message)
-        except json.JSONDecodeError:
-            self.log.error("Received invalid JSON message")
-            return
+            data = json.loads(raw_msg)
 
-        # Allocate a per-message trace id if none on session
-        trace_id = str(uuid.uuid4())
-        try:
-            # Proxy simple patterns:
-            if "command_request" in msg:
-                await self._handle_command(msg["command_request"], trace_id)
-            elif "policy_update" in msg:
-                await self._handle_policy_update(msg["policy_update"], trace_id)
-            elif "control" in msg and msg["control"].get("type") == "disconnect":
-                self.log.info("Received disconnect control signal", extra={"trace_id": trace_id})
-                await self.stop()
-            else:
-                self.log.warning(f"Unknown message type: {list(msg.keys())}", extra={"trace_id": trace_id})
-        except Exception as e:
-            self.log.error(f"Error handling message: {e}", extra={"trace_id": trace_id})
+            if "command_request" in data:
+                cmd = data["command_request"]
+                cmd_name = cmd.get("command_name")
+                cmd_id = cmd.get("command_id")
 
-    async def _handle_command(self, command: Dict, trace_id: str) -> None:
-        """Execute a command and return result."""
-        command_id = command.get("command_id") or str(uuid.uuid4())
-        command_name = command.get("command_name", "unknown")
+                COMMANDS_COUNTER.labels(command=cmd_name).inc()
+                logger.info(f"Executing command: {cmd_name}")
 
-        self.log.info(f"Received command: {command_name}", extra={"trace_id": trace_id})
-        COMMANDS_RECEIVED.labels(command_name=command_name).inc()
+                # Simulate work
+                await asyncio.sleep(1)
 
-        start_time = datetime.utcnow()
-        try:
-            # TODO: Dispatch to actual skill/plugin logic by command_name
-            await asyncio.sleep(1)  # simulate work
-
-            response = {
-                "command_response": {
-                    "command_id": command_id,
-                    "status": "SUCCESS",
-                    "result": {
-                        "message": f"Executed {command_name} successfully",
-                    },
+                # Send response
+                response = {
+                    "command_response": {
+                        "command_id": cmd_id,
+                        "status": "SUCCESS",
+                        "result": {"output": f"Executed {cmd_name}"}
+                    }
                 }
-            }
-            await self.websocket.send(json.dumps(response))
+                await self.websocket.send(json.dumps(response))
 
-            duration = (datetime.utcnow() - start_time).total_seconds()
-            COMMAND_DURATION.set(duration)
-            self.log.info(
-                f"Command {command_name} completed",
-                extra={"trace_id": trace_id, "duration": duration},
-            )
         except Exception as e:
-            self.log.error(f"Command {command_name} failed: {e}", extra={"trace_id": trace_id})
-            error_response = {
-                "command_response": {
-                    "command_id": command_id,
-                    "status": "EXECUTION_ERROR",
-                    "error_details": str(e),
-                }
-            }
-            try:
-                await self.websocket.send(json.dumps(error_response))
-            except Exception:
-                pass
+            logger.error(f"Error handling message: {e}")
 
-    async def _handle_policy_update(self, policy: Dict, trace_id: str) -> None:
-        """React to policy updates (e.g., heartbeat interval, capability toggles)."""
-        try:
-            new_hb = policy.get("heartbeat_interval_sec")
-            if isinstance(new_hb, int) and new_hb > 0:
-                self.heartbeat_interval = new_hb
-                self.log.info(
-                    f"Updated heartbeat interval to {new_hb}s",
-                    extra={"trace_id": trace_id},
-                )
-        except Exception as e:
-            self.log.error(f"Policy update error: {e}", extra={"trace_id": trace_id})
+# =========================
+# FastAPI Wrapper (Health)
+# =========================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start Bot Agent in background
+    agent_task = asyncio.create_task(agent.start())
+    yield
+    # Cleanup
+    agent._stop_event.set()
+    await agent_task
 
-
-# ===========================
-# FastAPI Health & Metrics UI
-# ===========================
-
-app = FastAPI(title="UBP Bot Agent")
+app = FastAPI(title="UBP Bot Agent", lifespan=lifespan)
+agent = BotAgent()
 
 @app.get("/health/live")
-async def health_live():
-    # Liveness: process is running
-    return {"status": "healthy"}
+async def liveness():
+    return {"status": "running"}
 
 @app.get("/health/ready")
-async def health_ready():
-    # Readiness: option to check internal dependencies
-    # TODO: verify essential config exists and DNS for orchestrator resolves
-    return {"status": "ready"}
+async def readiness():
+    if agent.connected:
+        return {"status": "connected"}
+    return Response(status_code=503, content="Connecting...")
 
 @app.get("/metrics")
 async def metrics():
-    data = generate_latest()
-    return Response(content=data, media_type="text/plain; version=0.0.4")
-
-
-# ===========
-# Entrypoint
-# ===========
-
-def _env(var: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(var)
-    return v if v is not None and v != "" else default
-
-def build_agent_from_env() -> BotAgent:
-    """
-    Environment variable configuration for quick starts and containerization.
-
-    UBP_BOT_ID                - required
-    UBP_ORCH_URL             - required (e.g., ws://localhost:8765 or wss://host/agent)
-    UBP_CAPABILITIES         - optional, comma-separated (e.g., task.execute,message.send)
-    UBP_CONFIG_DIR           - optional, default ~/.ubp
-    UBP_INITIAL_TOKEN        - optional, only needed for first-time onboarding
-    UBP_AGENT_VERSION        - optional, override agent version string
-    """
-    bot_id = _env("UBP_BOT_ID")
-    orch = _env("UBP_ORCH_URL")
-    if not bot_id or not orch:
-        raise RuntimeError("UBP_BOT_ID and UBP_ORCH_URL are required environment variables")
-
-    caps = set()
-    caps_raw = _env("UBP_CAPABILITIES", "")
-    if caps_raw:
-        caps = {c.strip() for c in caps_raw.split(",") if c.strip()}
-
-    config_dir = Path(_env("UBP_CONFIG_DIR", str(Path.home() / ".ubp")))
-    initial_token = _env("UBP_INITIAL_TOKEN")
-    agent_version = _env("UBP_AGENT_VERSION", DEFAULT_AGENT_VERSION)
-
-    cfg = AgentConfig(
-        bot_id=bot_id,
-        orchestrator_url=orch,
-        capabilities=caps or {"task.execute", "message.send"},
-        config_dir=config_dir,
-        initial_token=initial_token,
-        agent_version=agent_version,
-    )
-    return BotAgent(cfg)
-
-def run_api_server():
-    """Runs the FastAPI server (health + metrics)."""
-    import uvicorn
-    host = _env("UBP_HTTP_HOST", "0.0.0.0")
-    port = int(_env("UBP_HTTP_PORT", "8001"))
-    uvicorn.run(app, host=host, port=port, log_level="info")
-
-async def _main_async():
-    # Build agent from environment and run
-    agent = build_agent_from_env()
-
-    # Run health/metrics server in background
-    loop = asyncio.get_event_loop()
-    loop.create_task(asyncio.to_thread(run_api_server))
-
-    # Run the agent main loop
-    await agent.run()
-
-def main():
-    try:
-        asyncio.run(_main_async())
-    except KeyboardInterrupt:
-        pass
+    return Response(content=generate_latest(), media_type="text/plain")
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    # Run health server (which also starts bot loop via lifespan)
+    uvicorn.run(app, host=settings.HTTP_HOST, port=settings.HTTP_PORT)
