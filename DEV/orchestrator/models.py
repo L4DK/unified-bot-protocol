@@ -2,8 +2,8 @@
 # Project: Unified Bot Protocol (UBP)
 # Description: Pydantic models defining the data structures for Bot definitions, registration, and credentials.
 # Author: "Michael Landbo"
-# Date created: "2025/09/19"
-# Date Modified: "2025/12/21"
+# Date created: "21/12/2025"
+# Date Modified: "21/12/2025"
 # Version: "v.1.0.0"
 
 from datetime import datetime
