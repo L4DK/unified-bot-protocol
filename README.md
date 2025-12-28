@@ -6,6 +6,8 @@ UBP provides a **common protocol**, **secure orchestration**, and **interoperabi
 
 UBP is designed for organizations that require **scalability**, **security**, **observability**, and **cross‑platform consistency** in distributed bot ecosystems.
 
+<img width="2752" height="1536" alt="unnamed (2)" src="https://github.com/user-attachments/assets/72f96276-f5fb-4d7a-a46c-2f2df4a8d941" />
+
 ---
 
 ## 🚀 Key Principles
@@ -381,3 +383,4 @@ Please read:
 ## 📄 License
 
 Apache 2.0 — Permissive Open Source.
+
