@@ -10,26 +10,26 @@ from pydantic_settings import BaseSettings
 from functools import lru_cache
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
-    
-    # App Config
-    APP_NAME: str = "UBP Orchestrator"
-    UBP_ENV: str = "development"
-    
-    # Security
-    UBP_SECRET_KEY: str
-    UBP_API_KEY: str
-    
-    # Server
-    HOST: str = "0.0.0.0"
-    PORT: int = 8000
-    
-    class Config:
-        # Points to the .env file in the parent folder (DEV/) or current folder
-        env_file = ".env"
-        env_file_encoding = 'utf-8'
+     """Application settings loaded from environment variables."""
+
+     # App Config
+     APP_NAME: str = "UBP Orchestrator"
+     UBP_ENV: str = "development"
+
+     # Security
+     UBP_SECRET_KEY: str
+     UBP_API_KEY: str
+
+     # Server
+     HOST: str = "0.0.0.0"
+     PORT: int = 8000
+
+     class Config:
+          # Points to the .env file in the parent folder (DEV/) or current folder
+          env_file = ".env"
+          env_file_encoding = 'utf-8'
 
 @lru_cache()
 def get_settings():
-    """Returns a cached instance of the settings."""
-    return Settings()
+     """Returns a cached instance of the settings."""
+     return Settings()
