@@ -1,13 +1,14 @@
-# filepath: requirements-security.txt
-# project: Unified Bot Protocol (UBP) - Reference Implementation
-# component: Security (Zero Trust, encryption, authN/Z)
-# author: Michael Landbo (Founder & BDFL of UBP)
+# FilePath: "/DEV/orchestrator/security/requirements-security.txt"
+# Project: Unified Bot Protocol (UBP) - Reference Implementation
+# Component: Security (Zero Trust, encryption, authN/Z)
+# Author: "Michael Landbo"
+# Date created: "21/12/2025"
+# Date Modified: "21/12/2025"
+# Version: "v.1.0.0"
 #
-# license: Apache-2.0
-# version: 1.0.0
-# last-edit: 2025-09-19
+# License: Apache-2.0
 #
-# notes:
+# Notes:
 # - Shared security libs for encryption, signing, and structured security logging.
 
 cryptography
