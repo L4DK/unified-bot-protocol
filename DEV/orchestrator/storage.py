@@ -1,86 +1,126 @@
-# FilePath: "/DEV/orchestrator/storage.py"
-# Project: Unified Bot Protocol (UBP)
-# Description: In-memory storage implementation for bot definitions and credentials.
-#              Designed to be replaced by Redis/PostgreSQL in production.
-# Author: "Michael Landbo"
-# Date created: "21/12/2025"
-# Date Modified: "21/12/2025"
-# Version: "v.1.0.0"
+"""
+FilePath: "/DEV/orchestrator/storage.py"
+Project: Unified Bot Protocol (UBP)
+Description: Database storage implementation using SQLAlchemy.
+Author: "Michael Landbo"
+Date created: "31/12/2025"
+Version: "1.2.1"
+"""
 
-from typing import Dict, List, Optional
-import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import List, Optional
 
-from .models import BotDefinition, BotCredentials
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .db_models import Bot, BotCredential
+from .models import BotCredentials, BotDefinition
+
 
 class BotStorage:
     """
-    Handles bot definition and credential storage.
-
-    Current Implementation: In-Memory (Dict)
-    Future Roadmap: Migrate to Redis or PostgreSQL for persistence.
+    Handles bot definition and credential storage using PostgreSQL.
     """
 
-    def __init__(self):
-        # In-memory stores
-        self._definitions: Dict[str, BotDefinition] = {}
-        self._credentials: Dict[str, BotCredentials] = {}
+    async def _get_session(self) -> AsyncSession:
+        return AsyncSession()
 
-        # Concurrency lock to ensure thread/task safety during writes
-        self._lock = asyncio.Lock()
+    # --- Definition Methods ---
 
-    async def save_bot_definition(self, bot: BotDefinition) -> None:
-        """Stores or updates a bot definition."""
-        async with self._lock:
-            self._definitions[bot.bot_id] = bot
+    async def save_bot_definition(self, bot_def: BotDefinition) -> None:
+        async with AsyncSession() as session:
+            async with session.begin():
+                stmt = select(Bot).where(Bot.bot_id == bot_def.bot_id)
+                result = await session.execute(stmt)
+                existing_bot = result.scalar_one_or_none()
+
+                if existing_bot:
+                    existing_bot.name = bot_def.name
+                    existing_bot.description = bot_def.description
+                    existing_bot.adapter_type = bot_def.adapter_type
+                    # Nu korrekt type-hinted som List
+                    existing_bot.capabilities = bot_def.capabilities
+                    existing_bot.metadata_fields = bot_def.metadata
+                else:
+                    new_bot = Bot(bot_id=bot_def.bot_id, name=bot_def.name, description=bot_def.description, adapter_type=bot_def.adapter_type, capabilities=bot_def.capabilities, metadata_fields=bot_def.metadata, created_at=bot_def.created_at)
+                    session.add(new_bot)
 
     async def get_bot_definition(self, bot_id: str) -> Optional[BotDefinition]:
-        """Retrieves a bot definition by ID."""
-        return self._definitions.get(bot_id)
+        async with AsyncSession() as session:
+            stmt = select(Bot).where(Bot.bot_id == bot_id)
+            result = await session.execute(stmt)
+            bot_row = result.scalar_one_or_none()
+
+            if not bot_row:
+                return None
+
+            return BotDefinition(
+                bot_id=bot_row.bot_id, name=bot_row.name, description=bot_row.description, adapter_type=bot_row.adapter_type, capabilities=bot_row.capabilities, created_at=bot_row.created_at, metadata=bot_row.metadata_fields  # Nu er dette en List
+            )
 
     async def list_bot_definitions(self) -> List[BotDefinition]:
-        """Lists all registered bots."""
-        return list(self._definitions.values())
+        async with AsyncSession() as session:
+            stmt = select(Bot)
+            result = await session.execute(stmt)
+            bots = result.scalars().all()
+
+            return [BotDefinition(bot_id=b.bot_id, name=b.name, description=b.description, adapter_type=b.adapter_type, capabilities=b.capabilities, created_at=b.created_at, metadata=b.metadata_fields) for b in bots]
 
     async def delete_bot_definition(self, bot_id: str) -> None:
-        """Removes a bot definition."""
-        async with self._lock:
-            self._definitions.pop(bot_id, None)
+        async with AsyncSession() as session:
+            async with session.begin():
+                await session.execute(delete(BotCredential).where(BotCredential.bot_id == bot_id))
+                await session.execute(delete(Bot).where(Bot.bot_id == bot_id))
 
-    async def save_bot_credentials(self, credentials: BotCredentials) -> None:
-        """Securely stores bot credentials."""
-        async with self._lock:
-            self._credentials[credentials.bot_id] = credentials
+    # --- Credential Methods ---
+
+    async def save_bot_credentials(self, creds: BotCredentials) -> None:
+        async with AsyncSession() as session:
+            async with session.begin():
+                stmt = select(BotCredential).where(BotCredential.bot_id == creds.bot_id)
+                result = await session.execute(stmt)
+                existing = result.scalar_one_or_none()
+
+                if existing:
+                    existing.api_key = creds.api_key
+                    existing.one_time_token = creds.one_time_token
+                    existing.last_used = creds.last_used
+                else:
+                    new_creds = BotCredential(bot_id=creds.bot_id, api_key=creds.api_key, one_time_token=creds.one_time_token, created_at=creds.created_at)
+                    session.add(new_creds)
 
     async def get_bot_credentials(self, bot_id: str) -> Optional[BotCredentials]:
-        """Retrieves credentials for a specific bot."""
-        return self._credentials.get(bot_id)
+        async with AsyncSession() as session:
+            stmt = select(BotCredential).where(BotCredential.bot_id == bot_id)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+
+            if not row:
+                return None
+
+            return BotCredentials(bot_id=row.bot_id, api_key=row.api_key, one_time_token=row.one_time_token, created_at=row.created_at, last_used=row.last_used)
 
     async def validate_one_time_token(self, bot_id: str, token: str) -> bool:
-        """
-        Validates a One-Time-Token (OTT) for initial bot onboarding.
-        Returns True if the token matches.
-        """
         creds = await self.get_bot_credentials(bot_id)
         if not creds or not creds.one_time_token:
             return False
         return creds.one_time_token == token
 
     async def set_api_key(self, bot_id: str, api_key: str) -> None:
-        """
-        Rotates or sets the permanent API Key for a bot.
-        Invalidates the One-Time-Token upon successful key generation.
-        """
-        async with self._lock:
-            if bot_id in self._credentials:
-                creds = self._credentials[bot_id]
-                creds.api_key = api_key
-                creds.one_time_token = None  # Security: Invalidate OTT immediately
-                creds.last_used = datetime.utcnow()
+        async with AsyncSession() as session:
+            async with session.begin():
+                stmt = select(BotCredential).where(BotCredential.bot_id == bot_id)
+                result = await session.execute(stmt)
+                creds = result.scalar_one_or_none()
+
+                if creds:
+                    creds.api_key = api_key
+                    creds.one_time_token = None
+                    creds.last_used = datetime.now(timezone.utc)
 
     async def validate_api_key(self, bot_id: str, api_key: str) -> bool:
-        """Validates the permanent API Key for authentication."""
-        creds = await self.get_bot_credentials(bot_id)
-        if not creds or not creds.api_key:
-            return False
-        return creds.api_key == api_key
+        async with AsyncSession() as session:
+            stmt = select(BotCredential.api_key).where(BotCredential.bot_id == bot_id)
+            result = await session.execute(stmt)
+            stored_key = result.scalar_one_or_none()
+            return stored_key == api_key

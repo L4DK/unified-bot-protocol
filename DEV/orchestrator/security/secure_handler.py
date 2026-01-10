@@ -1,143 +1,247 @@
 """
-FilePath: "/DEV/orchestrator/security/secure_handler.py"
+FilePath: "/DEV/orchestrator/c2/secure_handler.py"
 Project: Unified Bot Protocol (UBP)
-Component: Secure Request Orchestrator
-Description: Orchestrates security checks (Threats, Compliance, Encryption) for requests.
+Component: C2 Secure Handler
+Description: Handles WebSocket connection, Encryption, Zero Trust validation, Message Routing.
 Author: "Michael Landbo"
 Date created: "21/12/2025"
-Date Modified: "27/12/2025"
-Version: "1.1.0"
+Date Modified: "31/12/2025"
+Version: "1.3.0"
 """
 
-import json
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Optional
+import time
+from typing import Dict, Any, Optional
 
-# Internal imports
-from .compliance_manager import ComplianceManager
-from .secure_communication import SecureCommunication
-from .threat_protection import ThreatProtection
+from fastapi import WebSocket, WebSocketDisconnect
+
+# Relative imports from security module
+from ..security.authenticator import SecureBotAuthenticator
+from ..security.compliance_manager import ComplianceManager
+from ..security.threat_protection import ThreatProtection
+from ..security.zero_trust import ZeroTrustManager
+
+# Type checking imports (undgår cirkulære imports ved runtime)
+try:
+    from integrations.core.routing.message_router import MessageRouter
+    from orchestrator.tasks.manager import TaskManager
+except ImportError:
+    MessageRouter = Any
+    TaskManager = Any
+
+logger = logging.getLogger(__name__)
 
 
-class SecureRequestHandler:
+class SecureC2Handler:
     """
-    Central security handler that pipes requests through the security stack:
-    1. Threat Protection (IP/Payload analysis)
-    2. Compliance (GDPR/PII checks)
-    3. Audit Logging
-    4. Secure Communication (Encryption)
+    Responsible for maintaining a secure, encrypted WebSocket channel.
+    Includes:
+        - Threat Protection scan upon connection.
+        - Zero Trust authentication.
+        - Ongoing message encryption and compliance checks.
+        - Routing of decrypted messages to MessageRouter or TaskManager.
     """
 
-    def __init__(self):
-        self.threat_protection = ThreatProtection()
-        self.secure_comm = SecureCommunication()
-        self.compliance_manager = ComplianceManager()
-        self.logger = logging.getLogger("ubp.security.handler")
-
-    async def handle_secure_request(
+    def __init__(
         self,
-        request_id: str,
-        ip_address: str,
-        headers: Dict,
-        payload: Dict,
-        compliance_rules: Optional[Dict] = None,
-    ) -> Dict:
+        message_router: Optional[MessageRouter] = None,
+        task_manager: Optional[TaskManager] = None
+    ):
         """
-        Handle incoming request with full security stack.
-        Returns a dictionary with status and data (or error details).
+        Initialize security components and inject core services.
+        Arguments match dependency injection from orchestrator_server.py
         """
+        self.zero_trust = ZeroTrustManager()
+        self.bot_auth = SecureBotAuthenticator(self.zero_trust)
+        self.threat_protection = ThreatProtection()
+        self.compliance_manager = ComplianceManager()
 
+        # Injected Core services
+        self.message_router = message_router
+        self.task_manager = task_manager
+
+    async def handle_connection(self, websocket: WebSocket, client_ip: str):
+        """Handle incoming bot connections with enhanced security"""
         try:
-            # 1. Threat Analysis
+            # 1. Initial threat assessment (Metadata only check)
             threat_analysis = await self.threat_protection.analyze_request(
-                ip_address, payload, headers
+                client_ip,
+                {},  # Initial connection has no payload body
+                dict(websocket.headers),
             )
 
             if threat_analysis["blocked"]:
-                await self._log_security_event(
-                    "THREAT_DETECTED", request_id, ip_address, threat_analysis
+                logger.warning(
+                    "Blocking connection from %s: %s",
+                    client_ip,
+                    threat_analysis["reason"],
                 )
-                return {
-                    "status": "BLOCKED",
-                    "reason": threat_analysis["reason"],
-                }
+                await websocket.close(code=4403)
+                return
 
-            # 2. Compliance Check
-            if compliance_rules:
-                violations = self.compliance_manager.validate_compliance(
-                    payload, compliance_rules
-                )
+            # 2. Receive initial handshake (JSON payload)
+            handshake_data = await websocket.receive_json()
 
-                if violations:
-                    await self._log_security_event(
-                        "COMPLIANCE_VIOLATION",
-                        request_id,
-                        ip_address,
-                        {"violations": violations},
-                    )
-                    return {
-                        "status": "REJECTED",
-                        "reason": "Compliance violations",
-                        "violations": violations,
-                    }
-
-            # 3. Sanitize PII
-            # We sanitize the payload before processing/logging to prevent PII leaks in logs
-            sanitized_payload = self.compliance_manager.sanitize_pii(payload)
-
-            # 4. Create Audit Trail
-            audit_entry = self.compliance_manager.create_audit_trail(
-                "SECURE_REQUEST",
-                request_id,
-                "process_request",
-                sanitized_payload,
-                {
-                    "ip_address": ip_address,
-                    "risk_level": threat_analysis["risk_level"],
+            # 3. Build security context
+            context = {
+                "ip": client_ip,
+                "headers": dict(websocket.headers),
+                "time": {
+                    "timestamp": time.time(),
+                    "allowed_hours": range(24),
                 },
+                "network": {
+                    "ip": client_ip,
+                    "protocol": "WSS",
+                    "port": websocket.url.port,
+                },
+            }
+
+            # 4. Authenticate bot
+            is_authenticated, auth_response = await self.bot_auth.authenticate_bot(
+                handshake_data.get("bot_id", "unknown"), handshake_data, context
             )
 
-            # 5. Secure Communication (Encryption for high/medium risk)
-            if threat_analysis["risk_level"] == "medium":
-                # Establish secure session for medium-risk requests
-                session_key, iv = self.secure_comm.generate_session_key()
+            if not is_authenticated:
+                logger.warning("Authentication failed for %s", client_ip)
+                await websocket.send_json(auth_response)
+                await websocket.close(code=4401)
+                return
 
-                encrypted_response = self.secure_comm.encrypt_message(
-                    json.dumps(sanitized_payload), session_key, iv
+            # 5. Start secure session loop
+            await self._handle_secure_session(
+                websocket,
+                handshake_data.get("bot_id"),
+                auth_response,
+                context,
+            )
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Connection handler error: %s", str(e), exc_info=True)
+            try:
+                await websocket.close(code=4500)
+            except RuntimeError:
+                pass  # Websocket might be already closed
+
+    async def _handle_secure_session(
+        self,
+        websocket: WebSocket,
+        bot_id: str,
+        auth_response: Dict,
+        context: Dict,
+    ):
+        """Handle authenticated bot session loop"""
+        try:
+            # Send initial authentication success response
+            await websocket.send_json(auth_response)
+
+            # Session loop
+            while True:
+                # Receive message
+                message = await websocket.receive_json()
+
+                # Verify session token included in message
+                is_valid, error = self.zero_trust.verify_session_token(
+                    message.get("session_token"), context
                 )
 
+                if not is_valid:
+                    await websocket.send_json(
+                        {"status": "AUTH_FAILED", "reason": error}
+                    )
+                    break
+
+                # Process message
+                response = await self._process_secure_message(
+                    bot_id, message, context
+                )
+
+                # Send response back to bot
+                await websocket.send_json(response)
+
+        except WebSocketDisconnect:
+            logger.info("Bot %s disconnected", bot_id)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Session handler error: %s", str(e))
+        finally:
+            try:
+                await websocket.close()
+            except Exception: # pylint: disable=broad-exception-caught
+                pass
+
+    async def _process_secure_message(
+        self, bot_id: str, message: Dict, context: Dict
+    ) -> Dict:
+        """
+        Process authenticated message, handle decryption, compliance, and ROUTING.
+        """
+        try:
+            # 1. Decrypt sensitive data if present
+            if "encrypted_data" in message:
+                message_data = self.bot_auth.decrypt_sensitive_data(
+                    message["encrypted_data"]
+                )
+            else:
+                message_data = message.get("data", {})
+
+            # 2. Validate compliance
+            violations = self.compliance_manager.validate_compliance(
+                message_data, {"classification": {"level": "confidential"}}
+            )
+
+            if violations:
                 return {
-                    "status": "SUCCESS",
-                    "encrypted_data": encrypted_response,
-                    "session_key": self.secure_comm.encrypt_session_key(
-                        session_key, self.secure_comm.get_public_key()
-                    ),
+                    "status": "REJECTED",
+                    "reason": "Compliance violations",
+                    "violations": violations,
                 }
 
-            # Default: Return sanitized data
+            # 3. ROUTING LOGIC
+            routing_result = {}
+
+            # Route to Task Manager if 'action' is present
+            if "action" in message_data and self.task_manager:
+                logger.info("Routing message to TaskManager: %s", message_data.get("action"))
+                task_id = self.task_manager.create_task(
+                    action=message_data["action"],
+                    params=message_data.get("params", {})
+                )
+                routing_result = {"status": "task_queued", "task_id": task_id}
+
+            # Route to Message Router otherwise
+            elif self.message_router:
+                logger.info("Routing message via MessageRouter")
+                routing_context = context.copy()
+                routing_context.update({
+                    "bot_id": bot_id,
+                    "source_platform": "c2_client",
+                    "user_id": bot_id
+                })
+
+                routing_result = await self.message_router.route_message(
+                    message_data,
+                    routing_context
+                )
+
+            else:
+                routing_result = {"status": "ignored", "reason": "No router configured"}
+
+            # 4. Prepare Response
+            response_data = {
+                "processed": True,
+                "timestamp": time.time(),
+                "routing_result": routing_result
+            }
+
             return {
                 "status": "SUCCESS",
-                "data": sanitized_payload,
-                "audit_id": audit_entry.get("id"),
+                "encrypted_data": self.bot_auth.encrypt_sensitive_data(
+                    response_data
+                ),
+                # pylint: disable=protected-access
+                "next_challenge": self.bot_auth._generate_challenge(bot_id),
             }
 
         except Exception as e:  # pylint: disable=broad-exception-caught
-            self.logger.error("Security handler error: %s", str(e), exc_info=True)
-            return {"status": "ERROR", "reason": "Internal security error"}
-
-    async def _log_security_event(
-        self, event_type: str, request_id: str, ip_address: str, details: Dict
-    ):
-        """Log security events with proper JSON formatting for ingestion tools."""
-        self.logger.info(
-            json.dumps(
-                {
-                    "event_type": event_type,
-                    "request_id": request_id,
-                    "ip_address": ip_address,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "details": details,
-                }
-            )
-        )
+            logger.error("Error processing secure message: %s", str(e))
+            return {"status": "ERROR", "reason": str(e)}

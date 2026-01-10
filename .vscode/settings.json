@@ -1,0 +1,69 @@
+/*
+ * FilePath: "/.vscode/settings.json"
+ * Description: Projekt-specifik Python konfiguration (Fixed Deprecated Settings).
+ * Author: "Michael Landbo"
+ * Date created: "31/12/2025"
+ * Date Modified: "31/12/2025"
+ * Version: "v.1.2.0"
+ */
+{
+    // =========================================================================
+    // 1. PYTHON INTERPRETER
+    // =========================================================================
+    "python.defaultInterpreterPath": "F:\\WEBSERVER\\bin\\python\\python-3.13\\python.exe",
+    // =========================================================================
+    // 2. INTELLISENSE & ANALYSIS (Pylance)
+    // =========================================================================
+    // "indexing" og "memory" er fjernet da de er 'Unknown' i nyeste versioner.
+    // Vi beholder auto-imports som stadig er valid.
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "off", // Sæt til 'basic' eller 'strict' hvis du vil have flere fejlmeldinger
+    // =========================================================================
+    // 3. FORMATTING (Modern Black Formatter Extension)
+    // =========================================================================
+    // Dette fortæller VS Code at dette projekt ALTID bruger Black extensionen
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "always"
+        }
+    },
+    // De gamle "python.formatting.*" indstillinger virker ikke længere.
+    // Brug denne i stedet for at sætte argumenter til Black Formatter extensionen:
+    "black-formatter.args": [
+        "--line-length",
+        "250"
+    ],
+    // =========================================================================
+    // 4. LINTING (Pylint Extension)
+    // =========================================================================
+    "pylint.args": [
+        "--max-line-length=250"
+    ],
+    // Her bestemmer du manuelt, hvad der ALDRIG skal vises
+    "files.exclude": {
+        "**/.git": false, // Vis .git mappen (valgfrit, sæt til true for at skjule)
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/__pycache__": false, // Skjul Python cache mapper (de støjer bare)
+        "**/*.pyc": true, // Skjul compilede python filer
+        "**/.env*": false, // SIKKERHED: Tving .env filer til at være synlige
+        "**/node_modules": true
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true
+    }
+}

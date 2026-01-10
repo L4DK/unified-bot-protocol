@@ -20,16 +20,32 @@ httpx
 # Command & Control / Realtime
 websockets
 grpcio
+aiohttp
 
 # State & Models
 redis
 pydantic
 pydantic-settings
-SQLAlchemy
+SQLAlchemy[asyncio]
+sqlalchemy-utils
+sqlalchemy-mixins
+aioredis
+aiosqlalchemy
+asyncpg
+greenlet
+
+# AuthN-Z
+pyjwt
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+eragero
 
 # Security
 cryptography
-PyJWT
+
 
 # Observability
 prometheus-client

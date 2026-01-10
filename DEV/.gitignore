@@ -4,7 +4,12 @@
 # Author: Michael Landbo (Founder & BDFL of UBP)
 # Date: 2025-12-23
 
-.env
+
 __pycache__/
 *.pyc
 logs/
+
+# Environment Variables (Secrets)
+.env
+.env.*
+!.env.example

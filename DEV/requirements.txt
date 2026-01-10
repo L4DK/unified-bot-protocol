@@ -12,31 +12,52 @@
 # - Pin using compatible-release operator (~=) to minimize breakage while allowing patch/minor updates.
 # - If you deploy a subset (e.g., only Orchestrator), prefer the component-specific requirements files.
 
-# Core Web Framework
+# --- Core Web Framework ---
 fastapi
 uvicorn[standard]
+# 'uvloop' og 'websockets' er inkluderet i uvicorn[standard], men vi beholder dem
+# her for at være eksplicitte omkring afhængighederne.
+uvloop
 httpx
 
-# Communication / Transports
+# --- Communication / Transports ---
 websockets
 grpcio
+aiohttp
 
-# Data & Storage
+# --- Data & Storage ---
+# 'redis' library now handles async natively (replaced deprecated aioredis)
 redis
 pydantic
-SQLAlchemy
+pydantic-settings
+
+# Database Drivers
+SQLAlchemy[asyncio]
+asyncpg         # Primary Async PostgreSQL Driver
+psycopg2-binary # Sync Driver fallback (good for tools/migrations)
+greenlet        # Required for SQLAlchemy async operations
+
+# --- Security / AuthN-Z / Crypto ---
+cryptography
+PyJWT
 
 # Security / AuthN-Z / Crypto
 cryptography
 PyJWT
 
-# Observability
+# --- Observability ---
 prometheus-client
 opentelemetry-sdk
 structlog
 
-# LLMs
+# --- LLMs ---
 openai
+anthropic
+google-genai
 
-# IoT / MQTT
+# --- IoT / MQTT ---
 paho-mqtt
+paho-mqtt-helper
+
+# --- Message Queues ---
+aio-pika

@@ -2,6 +2,6 @@
 # Description: Expose TaskManager and models.
 # Author: "Michael Landbo"
 
-from .manager import TaskManager, TaskResult, TaskStatus
+from .tasks.manager import TaskManager, TaskResult, TaskStatus
 
 __all__ = ["TaskManager", "TaskStatus", "TaskResult"]

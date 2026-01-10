@@ -1,5 +1,5 @@
 """
-FilePath: "/adapters/console/console_adapter.py"
+FilePath: "/DEV/adapters/console/console_adapter.py"
 Project: Unified Bot Protocol (UBP)
 Component: Console/CLI Adapter
 Description: Allows chatting with the bot directly via terminal stdin/stdout.
@@ -8,7 +8,9 @@ Author: "Michael Landbo"
 
 import asyncio
 import sys
-from typing import Dict, Any
+import uuid
+from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 
 # Import Base Adapter Classes
 from adapters.base_adapter import (
@@ -22,10 +24,16 @@ from adapters.base_adapter import (
      AdapterStatus
 )
 
+# Import Unified Message Models
+try:
+    from orchestrator.models import UnifiedMessage, MessageType, Participant
+except ImportError:
+    pass # Håndteres ved runtime
+
 class ConsoleAdapter(PlatformAdapter):
      """
      Simpel adapter der læser fra tastaturet og skriver til skærmen.
-     Perfekt til lokal test af LLM og tools uden netværkskald.
+     Implementerer nu UnifiedMessage oversættelse.
      """
 
      def __init__(self, config: Dict[str, Any]):
@@ -50,18 +58,67 @@ class ConsoleAdapter(PlatformAdapter):
           return AdapterMetadata(
                platform="console",
                display_name="Terminal CLI",
-               version="1.0.0",
+               version="1.1.0",
                author="Michael Landbo",
                description="Local command line interface for testing",
                supports_real_time=True
           )
 
+     # --- TRANSLATION IMPLEMENTATION (NYT) ---
+
+     async def to_unified(self, platform_event: Any) -> Optional[UnifiedMessage]:
+          """
+          Oversætter Console Input (Dict) -> UnifiedMessage
+          """
+          if not isinstance(platform_event, dict): return None
+
+          content = platform_event.get("content", "")
+          user_id = platform_event.get("user_id", "console_user")
+
+          if not content: return None
+
+          return UnifiedMessage(
+               id=str(uuid.uuid4()),
+               timestamp=datetime.now(timezone.utc),
+               type=MessageType.TEXT,
+               text=content,
+               sender=Participant(
+                    id=user_id,
+                    name=self.username,
+                    platform="console",
+                    role="user"
+               ),
+               recipient=Participant(
+                    id="system",
+                    name="System",
+                    platform="internal",
+                    role="system"
+               ),
+               metadata={"raw": platform_event}
+          )
+
+     async def to_platform(self, unified_msg: UnifiedMessage) -> Dict[str, Any]:
+          """
+          Oversætter UnifiedMessage -> Console Output (Dict)
+          """
+          # Simpel tekst repræsentation
+          text_content = unified_msg.text or ""
+
+          # Håndter attachments
+          if unified_msg.attachments:
+               text_content += f" [Attachments: {len(unified_msg.attachments)}]"
+
+          return {
+               "content": text_content,
+               "sender": unified_msg.sender.name if unified_msg.sender else "Unknown"
+          }
+
+     # --- STANDARD ADAPTER METHODS ---
+
      async def _setup_platform(self) -> None:
           """Starter input loopet i en baggrundstråd"""
           print(f"\n--- Console Adapter Started. Chat as '{self.username}' ---")
           print("Type your message and press Enter. (Type 'exit' to quit)\n")
-
-          # Vi bruger run_in_executor til input(), da det er blokerende
           self._listen_task = asyncio.create_task(self._input_loop())
 
      async def stop(self) -> None:
@@ -70,14 +127,17 @@ class ConsoleAdapter(PlatformAdapter):
           await super().stop()
 
      async def send_message(self, context: AdapterContext, message: Dict[str, Any]) -> SendResult:
-          """Printer svaret fra AI til terminalen"""
+          """
+          Low-level sender: Printer beskeden til terminalen.
+          """
           content = message.get("content", "")
-          # Brug farver hvis muligt, ellers bare tekst
+          sender = message.get("sender", "Bot")
+
           try:
                from termcolor import colored
-               print(colored(f"\n🤖 Bot: {content}\n", "yellow"))
+               print(colored(f"\n🤖 {sender}: {content}\n", "yellow"))
           except ImportError:
-               print(f"\n🤖 Bot: {content}\n")
+               print(f"\n🤖 {sender}: {content}\n")
 
           return SimpleSendResult(True)
 
@@ -85,7 +145,6 @@ class ConsoleAdapter(PlatformAdapter):
           loop = asyncio.get_running_loop()
           while not self._shutdown_event.is_set():
                try:
-                    # Kør input() i en thread så vi ikke blokerer asyncio loopet
                     user_input = await loop.run_in_executor(None, sys.stdin.readline)
                     user_input = user_input.strip()
 
@@ -95,27 +154,20 @@ class ConsoleAdapter(PlatformAdapter):
                          self._shutdown_event.set()
                          break
 
-                    # Send til Orchestrator (Main.py)
-                    context = AdapterContext(
-                         tenant_id="local",
-                         user_id="console_user",
-                         channel_id="console", # Vigtigt: Matcher navnet i main.py
-                         extras={"username": self.username}
-                    )
-
-                    payload = {
-                         "type": "user_message",
+                    # Construct raw event
+                    raw_event = {
                          "content": user_input,
-                         "metadata": {"source": "console"}
+                         "user_id": "console_user"
                     }
 
+                    # Translate to Unified (Test the logic)
+                    unified = await self.to_unified(raw_event)
+
+                    # Her ville vi normalt sende 'unified' til Routeren via WebSocket
+                    # For nu simulerer vi bare at vi har modtaget det
                     if self.connected:
-                         # Vi kalder den monkey-patchede metode fra main.py
-                         await self._send_to_orchestrator({
-                         "type": "user_message",
-                         "context": context.to_dict(),
-                         "payload": payload
-                         })
+                         # Placeholder for sending logic
+                         pass
 
                except asyncio.CancelledError:
                     break

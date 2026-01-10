@@ -5,11 +5,11 @@ Description: Loads configuration from .env and constructs the async DB connectio
 Author: "Michael Landbo"
 Date created: "31/12/2025"
 Date Modified: "31/12/2025"
-Version: "1.2.0"
+Version: "1.2.1"
 """
 
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import validator
 from pydantic_settings import BaseSettings
@@ -18,9 +18,6 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """
     Application settings loaded from environment variables.
-
-    Pydantic will automatically map environment variables (e.g., 'DB_PG_USER')
-    to the fields defined below.
     """
 
     # --- App Config ---
@@ -35,21 +32,24 @@ class Settings(BaseSettings):
     DB_PG_USER: str = "postgres"
     DB_PG_PASSWORD: str = "postgres"
     DB_PG_HOST: str = "localhost"
-    DB_PG_PORT: str = "5432"  # String to handle both int and str inputs safely
+    DB_PG_PORT: str = "5432"
     DB_PG_NAME: str = "ubp"
 
     # --- Calculated Database URL ---
-    DATABASE_URL: Optional[str] = None
+    # RETTELSE HER: Vi definerer den som 'str' og giver den en tom streng som startværdi.
+    # Dette gør Pylance glad, fordi typen nu er 'str' og ikke 'str | None'.
+    DATABASE_URL: str = ""
 
-    @validator("DATABASE_URL", pre=True, always=True)
-    def assemble_db_connection(self, v: Optional[str], values: dict) -> str:
+    validator("DATABASE_URL", pre=True, always=True)
+    def assemble_db_connection(self, v: Optional[str], values: dict[str, Any]) -> str:
         """
-        Constructs the SQLAlchemy Async Database URL from individual env vars.
-        Forces 'postgresql+asyncpg' driver to solve the sync/async conflict.
+        Constructs the SQLAlchemy Async Database URL.
         """
+        # Hvis v er sat (fra .env), returner vi den.
         if isinstance(v, str) and v:
             return v
 
+        # Ellers bygger vi den selv.
         return str(f"postgresql+asyncpg://" f"{values.get('DB_PG_USER')}:{values.get('DB_PG_PASSWORD')}@" f"{values.get('DB_PG_HOST')}:{values.get('DB_PG_PORT')}/" f"{values.get('DB_PG_NAME')}")
 
     # --- Server ---
@@ -59,7 +59,6 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
-        # 'ignore' gør at den ikke crasher på alle de andre variabler i din .env (f.eks. Redis, Mail osv.)
         extra = "ignore"
         case_sensitive = True
 

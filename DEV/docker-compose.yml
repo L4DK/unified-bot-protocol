@@ -1,0 +1,62 @@
+# FilePath: "/DEV/docker-compose.yml"
+version: '3.8'
+
+services:
+  # 1. The Main Application (UBP Orchestrator)
+  orchestrator:
+    build: .
+    container_name: ubp_orchestrator
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - UBP_ENV=development
+      # Database connection string (matcher 'postgres' servicen nedenfor)
+      - DATABASE_URL=postgresql://ubp_user:secure_password@postgres:5432/ubp_db
+      # Redis connection string (matcher 'redis' servicen nedenfor)
+      - REDIS_URL=redis://redis:6379/0
+      # Make sure PYTHONUNBUFFERED is set so we see logs immediately
+      - PYTHONUNBUFFERED=1
+    # Also loads variables from your .env file if it exists
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      # Store logs persistently on the host machine
+      - ./logs:/app/logs
+      # Mount the source code for "Hot Reload" during development
+      # (So you don't have to rebuild the Docker image every time you fix a file)
+      - .:/app
+
+  # 2. Database (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    container_name: ubp_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ubp_user
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: ubp_db
+    volumes:
+      # Persist database data
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # 3. Cache & Queue (Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: ubp_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      # Persist redis data (if needed)
+      - redis_data:/data
+
+# Define volumes for persistent data
+volumes:
+  postgres_data:
+  redis_data:

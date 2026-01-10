@@ -16,24 +16,31 @@
 # LAST EDIT: 2025-09-19
 
 from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, Set
-from enum import Enum
-from datetime import datetime, timedelta
+
 import asyncio
 import json
 import logging
 import uuid
-import websockets
-import aiohttp
-from pydantic import BaseModel, Field
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Any, Dict, List, Optional, Protocol, Set, runtime_checkable
+
+import aiohttp
+import websockets
+from pydantic import BaseModel, Field
+
+try:
+    from orchestrator.models import UBPUnifiedMessage
+except ImportError:
+    UBPUnifiedMessage = Any
 
 # =========================
 # Core Enums & Data Models
 # =========================
 
-class PlatformCapability(Enum):
+class UBPPlatformCapability(Enum):
     """Standard capabilities across all UBP platform adapters"""
     # Message Operations
     SEND_MESSAGE = "message.send"
@@ -77,7 +84,7 @@ class PlatformCapability(Enum):
     WEBHOOK_SUPPORT = "webhook.support"
     REAL_TIME_EVENTS = "events.realtime"
 
-class AdapterStatus(Enum):
+class UBPAdapterStatus(Enum):
     """Adapter lifecycle states"""
     INITIALIZING = "initializing"
     CONNECTING = "connecting"
@@ -87,36 +94,33 @@ class AdapterStatus(Enum):
     STOPPING = "stopping"
     STOPPED = "stopped"
 
-class MessagePriority(Enum):
+class UBPMessagePriority(Enum):
     """Message priority levels for queue processing"""
     LOW = 1
     NORMAL = 2
     HIGH = 3
     URGENT = 4
 
+
 # =================
 # Exception Classes
 # =================
 
-class AdapterError(Exception):
-    """Base exception for adapter errors"""
+class UBPAdapterError(Exception):
     def __init__(self, message: str, error_code: str = "ADAPTER_ERROR", details: Optional[Dict] = None):
         super().__init__(message)
         self.error_code = error_code
         self.details = details or {}
 
-class ConnectionError(AdapterError):
-    """Connection-related adapter errors"""
+class UBPConnectionError(UBPAdapterError):
     def __init__(self, message: str, details: Optional[Dict] = None):
         super().__init__(message, "CONNECTION_ERROR", details)
 
-class AuthenticationError(AdapterError):
-    """Authentication-related adapter errors"""
+class UBPAuthenticationError(UBPAdapterError):
     def __init__(self, message: str, details: Optional[Dict] = None):
         super().__init__(message, "AUTH_ERROR", details)
 
-class RateLimitError(AdapterError):
-    """Rate limiting errors"""
+class UBPRateLimitError(UBPAdapterError):
     def __init__(self, message: str, retry_after: Optional[int] = None, details: Optional[Dict] = None):
         super().__init__(message, "RATE_LIMIT_ERROR", details)
         self.retry_after = retry_after
@@ -127,7 +131,6 @@ class RateLimitError(AdapterError):
 
 @runtime_checkable
 class SendResult(Protocol):
-    """Result of a message send operation"""
     success: bool
     platform_message_id: Optional[str]
     error_message: Optional[str]
@@ -136,7 +139,6 @@ class SendResult(Protocol):
 
 @dataclass
 class SimpleSendResult:
-    """Simple implementation of SendResult"""
     success: bool
     platform_message_id: Optional[str] = None
     error_message: Optional[str] = None
@@ -147,13 +149,13 @@ class SimpleSendResult:
         if self.details is None:
             self.details = {}
         if self.timestamp is None:
-            self.timestamp = datetime.utcnow()
+            self.timestamp = datetime.now(timezone.utc)
 
 # =================
 # Context & Metadata
 # =================
 
-class AdapterContext:
+class UBPAdapterContext:
     """
     Context object carrying platform/session scoped metadata.
 
@@ -181,7 +183,7 @@ class AdapterContext:
         self.created_at = datetime.utcnow()
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert context to dictionary for serialization"""
+        """Convert context to dictionary"""
         return {
             "tenant_id": self.tenant_id,
             "correlation_id": self.correlation_id,
@@ -191,7 +193,7 @@ class AdapterContext:
             "extras": self.extras
         }
 
-class AdapterCapabilities:
+class UBPAdapterCapabilities:
     """
     Declarative capability set for adapter discovery and routing.
 
@@ -203,7 +205,7 @@ class AdapterCapabilities:
 
     def __init__(
         self,
-        supported_capabilities: Set[PlatformCapability],
+        supported_capabilities: Set[UBPPlatformCapability],
         max_message_length: int = 4096,
         supported_media_types: Optional[List[str]] = None,
         rate_limits: Optional[Dict[str, int]] = None,
@@ -215,8 +217,7 @@ class AdapterCapabilities:
         self.rate_limits = rate_limits or {}
         self.custom_features = custom_features or {}
 
-    def supports(self, capability: PlatformCapability) -> bool:
-        """Check if adapter supports a specific capability"""
+    def supports(self, capability: UBPPlatformCapability) -> bool:
         return capability in self.supported_capabilities
 
     def supports_media_type(self, media_type: str) -> bool:
@@ -237,7 +238,7 @@ class AdapterCapabilities:
             "custom_features": self.custom_features
         }
 
-class AdapterMetadata(BaseModel):
+class UBPAdapterMetadata(BaseModel):
     """Comprehensive metadata for platform adapters"""
     platform: str = Field(..., description="Platform identifier (e.g., 'telegram', 'slack')")
     version: str = Field(..., description="Adapter version")
@@ -267,25 +268,34 @@ class AdapterMetadata(BaseModel):
 # ===================
 
 @dataclass
-class QueuedMessage:
-    """Message item for adapter queue processing"""
+class UBPQueuedMessage:
     message: Dict[str, Any]
-    context: AdapterContext
-    priority: MessagePriority = MessagePriority.NORMAL
+    context: UBPAdapterContext
+    priority: UBPMessagePriority = UBPMessagePriority.NORMAL
     retry_count: int = 0
     max_retries: int = 3
-    created_at: datetime = None
+    created_at: datetime = datetime.now(timezone.utc)
     scheduled_at: Optional[datetime] = None
 
     def __post_init__(self):
         if self.created_at is None:
-            self.created_at = datetime.utcnow()
+            self.created_at = datetime.now(timezone.utc)
+        if self.priority == UBPMessagePriority.URGENT:
+            self.scheduled_at = self.created_at + timedelta(seconds=1)
+        if self.priority == UBPMessagePriority.HIGH:
+            self.scheduled_at = self.created_at + timedelta(minutes=1)
+        if self.priority == UBPMessagePriority.NORMAL:
+            self.scheduled_at = self.created_at + timedelta(minutes=5)
+        if self.priority == UBPMessagePriority.LOW:
+            self.scheduled_at = self.created_at + timedelta(days=1)
+        else:
+            self.scheduled_at = None
 
 # ==================
 # Base Adapter Class
 # ==================
 
-class PlatformAdapter(ABC):
+class UBPPlatformAdapter(ABC):
     """
     Base class for all UBP platform adapters.
 
@@ -309,20 +319,21 @@ class PlatformAdapter(ABC):
         self.logger = logging.getLogger(f"ubp.adapter.{self.platform_name}")
 
         # Connection management
-        self.websocket: Optional[websockets.WebSocketClientProtocol] = None
+        self.websocket: Optional[websockets.ClientProtocol] = None
         self.http_session: Optional[aiohttp.ClientSession] = None
-        self.status = AdapterStatus.INITIALIZING
+        self.status = UBPAdapterStatus.INITIALIZING
         self.connected = False
         self.last_heartbeat = None
 
         # Reconnection configuration
         self.reconnect_delay = config.get("reconnect_delay", 5)
+        self.min_reconnect_delay = config.get("min_reconnect_delay", 1)
         self.max_reconnect_delay = config.get("max_reconnect_delay", 300)
         self.reconnect_backoff = config.get("reconnect_backoff", 2.0)
         self.current_reconnect_delay = self.reconnect_delay
 
         # Message processing
-        self.message_queue: asyncio.Queue[QueuedMessage] = asyncio.Queue(
+        self.message_queue: asyncio.Queue[UBPQueuedMessage] = asyncio.Queue(
             maxsize=config.get("queue_size", 1000)
         )
         self.processing_messages = False
@@ -336,7 +347,7 @@ class PlatformAdapter(ABC):
             "connection_attempts": 0,
             "reconnects": 0,
             "errors": 0,
-            "uptime_start": datetime.utcnow()
+            "uptime_start": datetime.now(timezone.utc)
         }
 
         # Background tasks
@@ -353,19 +364,17 @@ class PlatformAdapter(ABC):
     @abstractmethod
     def platform_name(self) -> str:
         """Platform identifier (e.g., 'telegram', 'slack', 'whatsapp')"""
-        pass
 
     @property
     @abstractmethod
-    def capabilities(self) -> AdapterCapabilities:
+    def capabilities(self) -> UBPAdapterCapabilities:
         """Adapter capabilities and feature set"""
-        pass
 
     @property
     @abstractmethod
-    def metadata(self) -> AdapterMetadata:
+    def metadata(self) -> UBPAdapterMetadata:
         """Comprehensive adapter metadata"""
-        pass
+
 
     # =================
     # Abstract Methods
@@ -374,22 +383,60 @@ class PlatformAdapter(ABC):
     @abstractmethod
     async def _setup_platform(self) -> None:
         """Platform-specific initialization (API clients, webhooks, etc.)"""
-        pass
 
     @abstractmethod
     async def handle_platform_event(self, event: Dict[str, Any]) -> None:
-        """Handle incoming platform-specific events"""
-        pass
+        """Handle platform-specific events from Orchestrator"""
 
     @abstractmethod
     async def handle_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle UBP command from Orchestrator"""
-        pass
+        """Handle platform-specific commands from Orchestrator"""
 
     @abstractmethod
-    async def send_message(self, context: AdapterContext, message: Dict[str, Any]) -> SendResult:
-        """Send message to platform (core adapter functionality)"""
-        pass
+    async def send_message(self, context: UBPAdapterContext, message: Dict[str, Any]) -> SendResult:
+        """
+        Low-level send method.
+        Sends a platform-specific payload (dict) to the platform.
+        """
+
+
+    # ===========================
+    # The Translation Layer
+    # ===========================
+
+    @abstractmethod
+    async def to_unified(self, platform_event: Any) -> Optional[UBPUnifiedMessage]: # type: ignore
+        """
+        Converts a raw platform event (JSON/Dict) into a UBPUnifiedMessage.
+        Returns None if the event is not a message (e.g. typing indicator).
+        """
+
+    @abstractmethod
+    async def to_platform(self, unified_msg: UBPUnifiedMessage) -> Any: # type: ignore
+        """
+        Converts a UBPUnifiedMessage into the platform-specific payload (Dict/String).
+        """
+
+    async def send_unified_message(self, unified_msg: UBPUnifiedMessage) -> SendResult: # type: ignore
+        """
+        High-level send method.
+        Translates a UBPUnifiedMessage to platform format and sends it using existing logic.
+        """
+
+        # 1. Translate
+        platform_payload = await self.to_platform(unified_msg)
+
+        # 2. Construct Context (Extract routing info from UBPUnifiedMessage)
+        context = UBPAdapterContext(
+            tenant_id="default",
+            user_id=unified_msg.recipient.id if unified_msg.recipient else None,
+            channel_id=unified_msg.channel_id,
+            correlation_id=unified_msg.id
+        )
+
+        # 3. Delegate to low-level sender
+        return await self.send_message(context, platform_payload)
+
 
     # ==================
     # Lifecycle Management
@@ -399,7 +446,7 @@ class PlatformAdapter(ABC):
         """Start the adapter with full initialization"""
         try:
             self.logger.info(f"Starting {self.platform_name} adapter...")
-            self.status = AdapterStatus.CONNECTING
+            self.status = UBPAdapterStatus.CONNECTING
 
             # Initialize HTTP session
             connector = aiohttp.TCPConnector(
@@ -421,19 +468,19 @@ class PlatformAdapter(ABC):
             # Start background tasks
             await self._start_background_tasks()
 
-            self.status = AdapterStatus.CONNECTED
+            self.status = UBPAdapterStatus.CONNECTED
             self.logger.info(f"{self.platform_name} adapter started successfully")
 
         except Exception as e:
-            self.status = AdapterStatus.ERROR
+            self.status = UBPAdapterStatus.ERROR
             self.logger.error(f"Failed to start adapter: {str(e)}", exc_info=True)
-            raise AdapterError(f"Adapter startup failed: {str(e)}")
+            raise UBPAdapterError(f'Adapter startup failed: {str(e)}') from e
 
     async def stop(self) -> None:
         """Gracefully stop the adapter"""
         try:
             self.logger.info(f"Stopping {self.platform_name} adapter...")
-            self.status = AdapterStatus.STOPPING
+            self.status = UBPAdapterStatus.STOPPING
 
             # Signal shutdown
             self._shutdown_event.set()
@@ -443,12 +490,12 @@ class PlatformAdapter(ABC):
 
             # Close connections
             self.connected = False
-            if self.websocket:
+            if self.websocket and hasattr(self.websocket, 'close'):
                 await self.websocket.close()
             if self.http_session:
                 await self.http_session.close()
 
-            self.status = AdapterStatus.STOPPED
+            self.status = UBPAdapterStatus.STOPPED
             self.logger.info(f"{self.platform_name} adapter stopped")
 
         except Exception as e:
@@ -485,7 +532,7 @@ class PlatformAdapter(ABC):
         except Exception as e:
             self.logger.error(f"Connection to Orchestrator failed: {str(e)}")
             self.metrics["errors"] += 1
-            raise ConnectionError(f"Failed to connect to Orchestrator: {str(e)}")
+            raise UBPConnectionError(f"Failed to connect to Orchestrator: {str(e)}")
 
     async def _perform_handshake(self) -> None:
         """Perform UBP handshake with Orchestrator"""
@@ -513,7 +560,7 @@ class PlatformAdapter(ABC):
 
         if handshake_response.get("handshake_response", {}).get("status") != "SUCCESS":
             error_msg = handshake_response.get("handshake_response", {}).get("error_message", "Unknown error")
-            raise AuthenticationError(f"Handshake failed: {error_msg}")
+            raise UBPAuthenticationError(f"Handshake failed: {error_msg}")
 
         self.logger.info("Handshake with Orchestrator successful")
 
@@ -538,12 +585,12 @@ class PlatformAdapter(ABC):
                     except websockets.exceptions.ConnectionClosed:
                         self.logger.warning("Connection to Orchestrator lost")
                         self.connected = False
-                        self.status = AdapterStatus.DISCONNECTED
+                        self.status = UBPAdapterStatus.DISCONNECTED
 
             except Exception as e:
                 self.logger.error(f"Connection maintenance error: {str(e)}")
                 self.connected = False
-                self.status = AdapterStatus.ERROR
+                self.status = UBPAdapterStatus.ERROR
                 self.metrics["errors"] += 1
 
                 # Exponential backoff
@@ -600,12 +647,12 @@ class PlatformAdapter(ABC):
     async def queue_message(
         self,
         message: Dict[str, Any],
-        context: AdapterContext,
-        priority: MessagePriority = MessagePriority.NORMAL
+        context: UBPAdapterContext,
+        priority: UBPMessagePriority = UBPMessagePriority.NORMAL
     ) -> None:
         """Queue message for processing"""
         try:
-            queued_msg = QueuedMessage(
+            queued_msg =  UBPQueuedMessage(
                 message=message,
                 context=context,
                 priority=priority
@@ -617,7 +664,7 @@ class PlatformAdapter(ABC):
         except asyncio.QueueFull:
             self.logger.error("Message queue is full, dropping message")
             self.metrics["messages_failed"] += 1
-            raise AdapterError("Message queue is full")
+            raise UBPAdapterError("Message queue is full")
 
     async def _process_message_queue(self) -> None:
         """Process queued messages with priority handling"""
@@ -642,7 +689,7 @@ class PlatformAdapter(ABC):
                 self.metrics["errors"] += 1
                 await asyncio.sleep(1)  # Brief pause on error
 
-    async def _process_queued_message(self, queued_msg: QueuedMessage) -> None:
+    async def _process_queued_message(self, queued_msg: UBPQueuedMessage) -> None:
         """Process a single queued message"""
         try:
             # Check if message is scheduled for future delivery
@@ -677,7 +724,7 @@ class PlatformAdapter(ABC):
             self.logger.error(f"Error processing queued message: {str(e)}", exc_info=True)
             await self._handle_message_failure(queued_msg, str(e))
 
-    async def _handle_message_failure(self, queued_msg: QueuedMessage, error: str) -> None:
+    async def _handle_message_failure(self, queued_msg:  UBPQueuedMessage, error: str) -> None:
         """Handle message processing failure with retry logic"""
         queued_msg.retry_count += 1
 
@@ -784,7 +831,7 @@ class PlatformAdapter(ABC):
                     if time_since_heartbeat > timedelta(minutes=2):
                         self.logger.warning("No heartbeat received for 2 minutes")
                         self.connected = False
-                        self.status = AdapterStatus.DISCONNECTED
+                        self.status = UBPAdapterStatus.DISCONNECTED
 
                 # Check queue health
                 queue_size = self.message_queue.qsize()
@@ -822,7 +869,7 @@ class PlatformAdapter(ABC):
         """Get current adapter metrics"""
         return dict(self.metrics)
 
-    def get_status(self) -> AdapterStatus:
+    def get_status(self) -> UBPAdapterStatus:
         """Get current adapter status"""
         return self.status
 
@@ -830,7 +877,7 @@ class PlatformAdapter(ABC):
 # Adapter Registry
 # ==================
 
-class AdapterRegistry:
+class UBPAdapterRegistry:
     """
     Registry for managing platform adapters.
 
@@ -843,12 +890,12 @@ class AdapterRegistry:
 
     def __init__(self):
         self.logger = logging.getLogger("ubp.adapter.registry")
-        self._adapters: Dict[str, PlatformAdapter] = {}
+        self._adapters: Dict[str, UBPPlatformAdapter] = {}
         self._by_platform: Dict[str, List[str]] = {}
         self._health_cache: Dict[str, Dict[str, Any]] = {}
         self._cache_ttl = 60  # 1 minute cache TTL
 
-    def register(self, adapter: PlatformAdapter) -> None:
+    def register(self, adapter: UBPPlatformAdapter) -> None:
         """Register a platform adapter"""
         self._adapters[adapter.adapter_id] = adapter
         platform_adapters = self._by_platform.setdefault(adapter.platform_name, [])
@@ -869,27 +916,27 @@ class AdapterRegistry:
             return True
         return False
 
-    def get(self, adapter_id: str) -> Optional[PlatformAdapter]:
+    def get(self, adapter_id: str) -> Optional[UBPPlatformAdapter]:
         """Get adapter by ID"""
         return self._adapters.get(adapter_id)
 
-    def list_by_platform(self, platform: str) -> List[PlatformAdapter]:
+    def list_by_platform(self, platform: str) -> List[UBPPlatformAdapter]:
         """Get all adapters for a specific platform"""
         adapter_ids = self._by_platform.get(platform, [])
         return [self._adapters[aid] for aid in adapter_ids if aid in self._adapters]
 
-    def get_healthy_adapters(self, platform: str) -> List[PlatformAdapter]:
+    def get_healthy_adapters(self, platform: str) -> List[UBPPlatformAdapter]:
         """Get healthy adapters for a platform"""
         adapters = self.list_by_platform(platform)
         healthy_adapters = []
 
         for adapter in adapters:
-            if adapter.status == AdapterStatus.CONNECTED and adapter.connected:
+            if adapter.status == UBPAdapterStatus.CONNECTED and adapter.connected:
                 healthy_adapters.append(adapter)
 
         return healthy_adapters
 
-    def all(self) -> List[PlatformAdapter]:
+    def all(self) -> List[UBPPlatformAdapter]:
         """Get all registered adapters"""
         return list(self._adapters.values())
 
@@ -921,9 +968,9 @@ class AdapterRegistry:
 # Factory Functions
 # =================
 
-def create_adapter_registry() -> AdapterRegistry:
-    """Factory function to create an AdapterRegistry"""
-    return AdapterRegistry()
+def create_adapter_registry() -> UBPAdapterRegistry:
+    """Factory function to create an UBPAdapterRegistry"""
+    return UBPAdapterRegistry()
 
 # ===============
 # Module Exports
@@ -931,28 +978,34 @@ def create_adapter_registry() -> AdapterRegistry:
 
 __all__ = [
     # Base classes
-    "PlatformAdapter",
-    "AdapterRegistry",
+    "UBPPlatformAdapter",
+    "UBPAdapterRegistry",
 
     # Data models
-    "AdapterContext",
-    "AdapterCapabilities",
-    "AdapterMetadata",
-    "QueuedMessage",
+    "UBPAdapterContext",
+    "UBPAdapterCapabilities",
+    "UBPAdapterMetadata",
+    "UBPQueuedMessage",
     "SendResult",
     "SimpleSendResult",
 
     # Enums
-    "PlatformCapability",
-    "AdapterStatus",
-    "MessagePriority",
+    "UBPPlatformCapability",
+    "UBPAdapterStatus",
+    "UBPMessagePriority",
 
     # Exceptions
-    "AdapterError",
-    "ConnectionError",
-    "AuthenticationError",
-    "RateLimitError",
+    "UBPAdapterError",
+    "UBPConnectionError",
+    "UBPAuthenticationError",
+    "UBPRateLimitError",
 
+    # Factory functions
+    "create_adapter_registry"
+]
+    # Factory functions
+    "create_adapter_registry"
+]
     # Factory functions
     "create_adapter_registry"
 ]

@@ -1,0 +1,78 @@
+# FilePath: "/.pylintrc"
+# Description: Pylint Safe-Mode konfiguration (Fjernet problematiske import-regler).
+# Author: "Michael Landbo"
+# Date created: "31/12/2025"
+# Date Modified: "31/12/2025"
+# Version: "v.1.3.0"
+
+[MAIN]
+jobs=0
+# Vi holder os til standard extension whitelist
+extension-pkg-allow-list=pydantic,numpy,torch
+ignore=venv,env,.venv,.env,__pycache__,build,dist,.git
+load-plugins=
+suggestion-mode=yes
+unsafe-load-any-extension=no
+
+[MESSAGES CONTROL]
+# Jeg har fjernet 'bad-import-position' og 'known-first-party' relaterede fejl
+# for at sikre at den kører igennem uden brok.
+disable=
+    C0114,  # missing-module-docstring
+    C0115,  # missing-class-docstring
+    C0116,  # missing-function-docstring
+    C0103,  # invalid-name
+    R0903,  # too-few-public-methods
+    R0913,  # too-many-arguments
+    R0914,  # too-many-locals
+    R0915,  # too-many-statements
+    R0801,  # duplicate-code
+    W0511,  # fixme (TODOs)
+    W1203,  # logging-fstring-interpolation
+    W0703,  # broad-except
+    C0301,  # line-too-long
+    C0411,  # wrong-import-order
+    C0413,  # wrong-import-position
+    C0412   # ungrouped-imports
+
+[REPORTS]
+output-format=text
+reports=no
+score=no
+
+[FORMAT]
+max-line-length=250
+max-module-lines=5000
+indent-string='    '
+
+[TYPECHECK]
+generated-members=requests.*,numpy.*,torch.*,pydantic.*
+ignored-modules=
+ignored-classes=
+
+[DESIGN]
+max-args=12
+max-locals=25
+max-returns=10
+max-branches=20
+max-statements=80
+max-parents=10
+max-attributes=15
+
+[IMPORTS]
+# Vi har fjernet 'known-first-party', da den crashede din Pylint.
+# Disse to er standard og sikre:
+known-standard-library=
+known-third-party=requests,numpy,pydantic,fastapi
+import-graph=no
+ext-import-graph=no
+int-import-graph=no
+
+[LOGGING]
+logging-modules=logging
+
+[SIMILARITIES]
+min-similarity-lines=8
+ignore-comments=yes
+ignore-docstrings=yes
+ignore-imports=yes

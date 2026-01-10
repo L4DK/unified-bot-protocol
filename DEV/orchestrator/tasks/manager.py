@@ -1,37 +1,38 @@
-# FilePath: "/DEV/orchestrator/tasks/manager.py"
-# Project: Unified Bot Protocol (UBP)
-# Description: Manages asynchronous background tasks (e.g., document analysis).
-#              Tracks status, progress, and results in-memory.
-# Author: "Michael Landbo"
-# Date created: "21/12/2025"
-# Version: "v.1.1.0"
+"""
+FilePath: "/DEV/orchestrator/tasks/manager.py"
+Project: Unified Bot Protocol (UBP)
+Description: Manages asynchronous background tasks with Database Persistence.
+Author: "Michael Landbo"
+Date created: "31/12/2025"
+Version: "1.2.1"
+"""
 
 import asyncio
-import uuid
 import logging
-import time
-from enum import Enum
-from typing import Dict, Any, Optional, Coroutine
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
-from pydantic import BaseModel
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Coroutine, Dict, List, Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..db_models import TaskModel
 
 logger = logging.getLogger("ubp.task_manager")
 
+
 class TaskStatus(Enum):
-    """Enumeration of possible task states."""
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
+
 @dataclass
 class TaskResult:
-    """
-    Data model representing the state and result of a background task.
-    Combines Pydantic-style fields with dataclass for internal usage.
-    """
     id: str
     status: TaskStatus
     created_at: float
@@ -41,204 +42,108 @@ class TaskResult:
     result: Any = None
     error: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    _async_task: Optional[asyncio.Task] = None  # Reference to the actual asyncio task
+
 
 class TaskManager:
-    """
-    Central manager for spawning and tracking background tasks.
-    Currently uses in-memory storage. In production, use Redis/Celery.
-    """
-
     def __init__(self):
-        self.tasks: Dict[str, TaskResult] = {}
-        self._retention_period = 3600  # Keep results for 1 hour
+        pass
 
-    async def submit_task(
-        self,
-        coro: Coroutine,
-        name: str = "unknown_task",
-        metadata: Dict[str, Any] = None
-    ) -> str:
-        """
-        Submit a coroutine for background execution.
-        Returns a task_id immediately.
-        """
+    async def submit_task(self, coro: Coroutine, name: str = "unknown_task", metadata: Optional[Dict[str, Any]] = None) -> str:
         task_id = str(uuid.uuid4())
         metadata = metadata or {}
 
-        task_entry = TaskResult(
-            id=task_id,
-            status=TaskStatus.PENDING,
-            created_at=time.time(),
-            metadata={**metadata, "name": name}
-        )
+        async with AsyncSession() as session:
+            async with session.begin():
+                new_task = TaskModel(id=task_id, name=name, status=TaskStatus.PENDING.value, metadata_fields=metadata, created_at=datetime.now(timezone.utc))
+                session.add(new_task)
 
-        # Wrap coroutine to handle lifecycle (status updates)
+        logger.info("Task submitted to DB: %s (ID: %s)", name, task_id)
+
         wrapped_coro = self._run_task_wrapper(task_id, coro)
-
-        # Schedule task on the event loop
-        async_task = asyncio.create_task(wrapped_coro)
-        task_entry._async_task = async_task
-
-        self.tasks[task_id] = task_entry
-        logger.info(f"Task submitted: {name} (ID: {task_id})")
-
-        # Simple cleanup trigger
-        if len(self.tasks) > 1000:
-            self._cleanup_old_tasks()
+        asyncio.create_task(wrapped_coro)
 
         return task_id
 
-    # Legacy wrapper for creating specific tasks by string action name
-    def create_task(self, action: str, params: Dict[str, Any]) -> str:
-        """
-        Create a new background task by action name and return its unique ID.
-        """
+    async def create_task(self, action: str, params: Dict[str, Any]) -> str:
         if action == "analyze-document":
-            # We defer the coroutine creation to here
             coro = self._analyze_document_job(params)
-            # Use submit_task to handle the async scheduling
-            # Note: submit_task is async, but create_task signature is sync in your original code.
-            # To fix this mismatch in a sync method, we create the task directly on the loop.
+            return await self.submit_task(coro, name=action, metadata=params)
 
-            task_id = str(uuid.uuid4())
-            task_entry = TaskResult(
-                id=task_id,
-                status=TaskStatus.PENDING,
-                created_at=time.time(),
-                metadata={"action": action, **params}
-            )
-            self.tasks[task_id] = task_entry
-
-            # Start the wrapper
-            asyncio.create_task(self._run_task_wrapper(task_id, coro))
-            return task_id
-        else:
-            raise ValueError(f"Unknown action: {action}")
+        raise ValueError(f"Unknown action: {action}")
 
     async def _run_task_wrapper(self, task_id: str, coro: Coroutine):
-        """Internal wrapper that updates status before/after execution."""
-        task = self.tasks.get(task_id)
-        if not task:
-            return
-
-        task.status = TaskStatus.RUNNING
-        task.started_at = time.time()
+        await self._update_task_status(task_id, TaskStatus.RUNNING, started=True)
 
         try:
-            # Pass the task_id to the coroutine if it expects it (for progress updates)
-            # This is a bit tricky with generic coroutines, so we rely on the specific job
-            # knowing how to update the manager if needed, or we inject a callback.
-            # For simplicity here, we assume the coro is self-contained or bound to the manager instance.
-
-            # Actually run the job
             result = await coro
-
-            task.result = result
-            task.status = TaskStatus.COMPLETED
-            task.progress = 100
-            logger.info(f"Task {task_id} completed successfully.")
+            await self._update_task_status(task_id, TaskStatus.COMPLETED, result=result, progress=100, completed=True)
+            logger.info("Task %s completed successfully.", task_id)
 
         except asyncio.CancelledError:
-            task.status = TaskStatus.CANCELLED
-            logger.warning(f"Task {task_id} was cancelled.")
+            await self._update_task_status(task_id, TaskStatus.CANCELLED, completed=True)
+            logger.warning("Task %s was cancelled.", task_id)
             raise
 
-        except Exception as e:
-            task.error = str(e)
-            task.status = TaskStatus.FAILED
-            logger.error(f"Task {task_id} failed: {e}", exc_info=True)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            await self._update_task_status(task_id, TaskStatus.FAILED, error=str(e), completed=True)
+            logger.error("Task %s failed: %s", task_id, e, exc_info=True)
 
-        finally:
-            task.completed_at = time.time()
+    async def _update_task_status(self, task_id: str, status: TaskStatus, result: Any = None, error: Optional[str] = None, progress: Optional[int] = None, started: bool = False, completed: bool = False):
+        async with AsyncSession() as session:
+            async with session.begin():
+                stmt = select(TaskModel).where(TaskModel.id == task_id)
+                res = await session.execute(stmt)
+                task = res.scalar_one_or_none()
 
-    # --- Job Implementations ---
+                if task:
+                    task.status = status.value
+                    if result is not None:
+                        task.result = result
+                    if error is not None:
+                        task.error = error
+                    if progress is not None:
+                        task.progress = progress
 
+                    now = datetime.now(timezone.utc)
+                    if started:
+                        task.started_at = now
+                    if completed:
+                        task.completed_at = now
+
+    # --- Jobs ---
     async def _analyze_document_job(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Simulate a long-running document analysis process.
-        """
-        # Note: In a real implementation, we would need a way to look up the task_id
-        # inside this method to update progress. For this 'job' pattern,
-        # we often pass a 'progress_callback' or bind the task_id.
-        # Since the wrapper runs generic coroutines, direct progress updates
-        # to self.tasks[task_id] are harder without passing task_id in.
-
-        # Simplified simulation:
-        total_steps = 5
         filename = params.get("filename", "unknown")
-
-        for step in range(total_steps):
-            await asyncio.sleep(2)
-            # (Progress update logic would ideally go here if we had the ID context)
-
-        return {
-            "analysis_complete": True,
-            "processing_time": 10,
-            "document_stats": {
-                "pages": 5,
-                "words": 1000,
-                "entities": 50,
-                "filename": filename
-            }
-        }
+        await asyncio.sleep(5)
+        return {"analysis_complete": True, "processing_time": 5, "document_stats": {"pages": 5, "words": 1000, "filename": filename}}
 
     # --- Public API ---
+    async def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        async with AsyncSession() as session:
+            stmt = select(TaskModel).where(TaskModel.id == task_id)
+            result = await session.execute(stmt)
+            task = result.scalar_one_or_none()
 
-    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """Get status and data for a specific task."""
-        task = self.tasks.get(task_id)
-        if not task:
-            return None
+            if not task:
+                return None
 
-        return {
-            "id": task.id,
-            "status": task.status.value,
-            "progress": task.progress,
-            "created_at": task.created_at,
-            "completed_at": task.completed_at,
-            "result": task.result,
-            "error": task.error,
-            "metadata": task.metadata
-        }
-
-    # Alias for backward compatibility
-    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
-        return self.get_task(task_id)
-
-    def list_tasks(self, status: Optional[str] = None) -> list:
-        """List all tasks, optionally filtered by status."""
-        results = []
-        for task in self.tasks.values():
-            if status and task.status.value != status:
-                continue
-            results.append({
+            return {
                 "id": task.id,
-                "status": task.status.value,
+                "status": task.status,
                 "progress": task.progress,
-                "created_at": task.created_at
-            })
-        return results
+                "created_at": task.created_at.timestamp() if task.created_at else None,
+                "completed_at": task.completed_at.timestamp() if task.completed_at else None,
+                "result": task.result,
+                "error": task.error,
+                "metadata": task.metadata_fields,
+            }
 
-    async def cancel_task(self, task_id: str) -> bool:
-        """Cancel a running task."""
-        task = self.tasks.get(task_id)
-        if task and task._async_task and not task._async_task.done():
-            task._async_task.cancel()
-            try:
-                await task._async_task
-            except asyncio.CancelledError:
-                pass
-            return True
-        return False
+    async def list_tasks(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        async with AsyncSession() as session:
+            stmt = select(TaskModel)
+            if status:
+                stmt = stmt.where(TaskModel.status == status)
 
-    def _cleanup_old_tasks(self):
-        """Remove old, finished tasks to save memory."""
-        now = time.time()
-        to_remove = []
-        for task_id, task in self.tasks.items():
-            if task.completed_at and (now - task.completed_at > self._retention_period):
-                to_remove.append(task_id)
+            result = await session.execute(stmt)
+            tasks = result.scalars().all()
 
-        for tid in to_remove:
-            del self.tasks[tid]
+            return [{"id": t.id, "status": t.status, "progress": t.progress, "created_at": t.created_at.timestamp() if t.created_at else None} for t in tasks]
